@@ -6,7 +6,7 @@ from aiohttp import web
 from supabase import create_client
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ChatMemberHandler, ContextTypes, filters
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -17,20 +17,12 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 MAIN_KEYBOARD = ReplyKeyboardMarkup([["📊 Top Posts"],["👁 Best Engagement"],["🔗 Forward Sources"],["⚙️ Settings"]], resize_keyboard=True)
 BACK_KEYBOARD = ReplyKeyboardMarkup([["🔙 Back to Menu"]], resize_keyboard=True)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Welcome! Add the bot as admin to your channel then send /addchannel", reply_markup=ReplyKeyboardMarkup([["/addchannel"]], resize_keyboard=True))
-async def add_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Forward a message from your channel or send /done after adding the bot as admin.", reply_markup=ReplyKeyboardMarkup([["/done"]], resize_keyboard=True))
-async def done(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.forward_from_chat:
-        await update.message.reply_text("Please forward a message from the channel.")
-        return
-    chat = update.message.forward_from_chat
-    user_id = update.effective_user.id
-    try:
-        await supabase.table("channels").upsert({"chat_id": str(chat.id),"title": chat.title,"owner_id": user_id,"member_count": 0}).execute()
-        await update.message.reply_text(f"✅ Channel '{chat.title}' registered successfully!", reply_markup=MAIN_KEYBOARD)
-    except Exception as e:
-        await update.message.reply_text("Error registering channel.")
+    await update.message.reply_text(
+        "Welcome to Channel Analytics Bot!\n\n"
+        "Please add the bot as Administrator to your channel.\n"
+        "After that, forward any message from your channel here.",
+        reply_markup=MAIN_KEYBOARD
+    )
 async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text == "🔙 Back to Menu":
@@ -39,7 +31,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     channels = await supabase.table("channels").select("*").eq("owner_id", user_id).execute()
     if not channels.data:
-        await update.message.reply_text("Please register a channel first.", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("No channel registered yet.\nPlease forward a message from your channel to register it.", reply_markup=MAIN_KEYBOARD)
         return
     channel = channels.data[0]
     if text == "📊 Top Posts":
@@ -49,7 +41,7 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🔗 Forward Sources":
         await show_referrals(update, channel["chat_id"])
     elif text == "⚙️ Settings":
-        await update.message.reply_text("Settings coming soon.", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Settings will be added later.", reply_markup=MAIN_KEYBOARD)
 async def show_top_posts(update: Update, chat_id):
     cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
     res = await supabase.table("post_analytics").select("*").eq("chat_id", chat_id).gte("timestamp", cutoff).limit(10).execute()
@@ -84,6 +76,21 @@ async def show_referrals(update: Update, chat_id):
     for title, count in sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]:
         text += f"• {title}: {count} times\n"
     await update.message.reply_text(text, reply_markup=BACK_KEYBOARD)
+async def register_channel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.forward_from_chat:
+        chat = update.message.forward_from_chat
+        user_id = update.effective_user.id
+        try:
+            await supabase.table("channels").upsert({
+                "chat_id": str(chat.id),
+                "title": chat.title,
+                "owner_id": user_id,
+                "member_count": 0
+            }).execute()
+            await update.message.reply_text(f"✅ Channel '{chat.title}' registered successfully!", reply_markup=MAIN_KEYBOARD)
+        except Exception as e:
+            logger.error(f"Register error: {e}")
+            await update.message.reply_text("Error registering channel.")
 async def post_engagement_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.channel_post:
         return
@@ -95,7 +102,14 @@ async def post_engagement_handler(update: Update, context: ContextTypes.DEFAULT_
         member_count = await context.bot.get_chat_member_count(chat_id)
     except:
         member_count = 0
-    await supabase.table("post_analytics").upsert({"chat_id": chat_id,"message_id": msg.message_id,"views": views,"forwards": forwards,"members_at_time": member_count,"timestamp": datetime.now(timezone.utc).isoformat()}, on_conflict="chat_id,message_id").execute()
+    await supabase.table("post_analytics").upsert({
+        "chat_id": chat_id,
+        "message_id": msg.message_id,
+        "views": views,
+        "forwards": forwards,
+        "members_at_time": member_count,
+        "timestamp": datetime.now(timezone.utc).isoformat()
+    }, on_conflict="chat_id,message_id").execute()
 async def member_update_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.my_chat_member:
         status = update.my_chat_member.new_chat_member.status
@@ -128,10 +142,9 @@ async def health_check(request):
 async def main():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("addchannel", add_channel))
-    application.add_handler(CommandHandler("done", done))
     application.add_handler(MessageHandler(filters.TEXT & \
                                            filters.COMMAND, main_menu))
+    application.add_handler(MessageHandler(filters.FORWARDED, register_channel_handler))
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, post_engagement_handler))
     application.add_handler(ChatMemberHandler(member_update_handler, ChatMemberHandler.MY_CHAT_MEMBER))
     application.add_handler(ChatMemberHandler(notify_member_change))
@@ -147,7 +160,7 @@ async def main():
     webhook_url = f"{RENDER_URL}/webhook"
     try:
         await application.bot.set_webhook(url=webhook_url)
-        logger.info(f"Webhook set to: {webhook_url}")
+        logger.info(f"Webhook set successfully: {webhook_url}")
     except Exception as e:
         logger.error(f"Failed to set webhook: {e}")
     await asyncio.Event().wait()
