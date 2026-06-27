@@ -275,7 +275,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if res.data:
             supabase.table("link_clicks").update({"clicks": res.data[0]["clicks"] + 1}).eq("campaign", campaign).eq("chat_id", chat_id).execute()
             await query.edit_message_text(f"Campaign {campaign} link:\n{res.data[0]['target_url']}\n✅ Click recorded.")
-async def handle_post_id_for_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+            async def handle_post_id_for_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if context.user_data.get("state") == "awaiting_post_id":
         message_id = int(update.message.text)
         channel_id = context.user_data.pop("analyze_channel_id")
@@ -353,4 +353,108 @@ async def referral_report(update: Update, context: ContextTypes.DEFAULT_TYPE, ch
     for title, count in sorted_titles:
         report += f"{title}: {count}\n"
     await update.callback_query.edit_message_text(report)
-async def top_posts_report(update: Update, context: ContextTypes.
+async def top_posts_report(update: Update, context: ContextTypes.DEFAULT_TYPE, channel_id):
+    res = supabase.table("post_analytics").select("*").eq("chat_id", channel_id).execute()
+    if not res.data:
+        await update.callback_query.edit_message_text("No data.")
+        return
+    scored = []
+    for post in res.data:
+        score = post["views"] * 1 + post["forwards"] * 5
+        scored.append((score, post))
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top = scored[:5]
+    report = "🏆 Top Posts:\n"
+    for score, post in top:
+        report += f"#{post['message_id']} - Views:{post['views']}, Fwd:{post['forwards']} (Score:{score})\n"
+    await update.callback_query.edit_message_text(report)
+async def compare_posts(update: Update, context: ContextTypes.DEFAULT_TYPE, channel_id, id1, id2):
+    try:
+        p1 = supabase.table("post_analytics").select("*").eq("chat_id", channel_id).eq("message_id", id1).single().execute()
+        p2 = supabase.table("post_analytics").select("*").eq("chat_id", channel_id).eq("message_id", id2).single().execute()
+        if not p1.data or not p2.data:
+            await update.message.reply_text("One or both posts not found.")
+            return
+        p1 = p1.data
+        p2 = p2.data
+        report = f"📊 Comparison:\n#{id1}: {p1['views']} views, {p1['forwards']} fwd\n#{id2}: {p2['views']} views, {p2['forwards']} fwd"
+        await update.message.reply_text(report, reply_markup=MAIN_KEYBOARD)
+    except Exception as e:
+        await update.message.reply_text(f"Error comparing: {e}")
+async def export_csv(update: Update, context: ContextTypes.DEFAULT_TYPE, channel_id):
+    res = supabase.table("post_analytics").select("*").eq("chat_id", channel_id).order("timestamp").execute()
+    if not res.data:
+        await update.callback_query.edit_message_text("No data.")
+        return
+    output = io.StringIO()
+    writer = csv.writer(output)
+    writer.writerow(["message_id", "views", "forwards", "engagement_rate", "timestamp"])
+    for row in res.data:
+        writer.writerow([row["message_id"], row["views"], row["forwards"], row.get("engagement_rate", ""), row["timestamp"]])
+    csv_content = output.getvalue()
+    await context.bot.send_document(chat_id=update.effective_chat.id, document=io.BytesIO(csv_content.encode()), filename="analytics.csv")
+    await update.callback_query.edit_message_text("CSV exported.")
+async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, channel_id):
+    keyboard = [
+        [InlineKeyboardButton("Set Loss Alert Threshold", callback_data=f"setloss_{channel_id}")],
+        [InlineKeyboardButton("Set Daily Report Time", callback_data=f"setreport_{channel_id}")],
+    ]
+    await update.callback_query.edit_message_text("Settings:", reply_markup=InlineKeyboardMarkup(keyboard))
+async def on_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.my_chat_member and update.my_chat_member.new_chat_member.status == "administrator":
+        chat = update.effective_chat
+        if chat.type == "channel":
+            owner_id = update.effective_user.id
+            supabase.table("channels").upsert({
+                "chat_id": str(chat.id),
+                "title": chat.title,
+                "owner_id": owner_id,
+                "member_count": 0,
+                "loss_alert_threshold": 10,
+                "daily_report_time": "08:00"
+            }, on_conflict="chat_id").execute()
+async def daily_report_job(context: ContextTypes.DEFAULT_TYPE):
+    channels = supabase.table("channels").select("*").execute()
+    for ch in channels.data:
+        chat_id = ch["chat_id"]
+        owner_id = ch["owner_id"]
+        report_time_str = ch.get("daily_report_time", "08:00")
+        now = datetime.utcnow().strftime("%H:%M")
+        if report_time_str == now:
+            cutoff = (datetime.utcnow() - timedelta(days=1)).isoformat()
+            res = supabase.table("member_log").select("*").eq("chat_id", chat_id).gte("date", cutoff).order("date").execute()
+            if len(res.data) >= 2:
+                first = res.data[0]["count"]
+                last = res.data[-1]["count"]
+                growth = last - first
+                report = f"📈 Daily Report {ch['title']}:\nMembers: {first} → {last} ({growth:+d})"
+                try:
+                    await context.bot.send_message(owner_id, report)
+                except:
+                    pass
+async def health_check(request):
+    return web.Response(text="OK")
+async def main():
+    app = web.Application()
+    app.router.add_get("/healthz", health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    application = Application.builder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_main_menu))
+    application.add_handler(CommandHandler("cancel", cancel))
+    application.add_handler(MessageHandler(filters.TEXT & filters.Regex(r'^\d'), handle_post_id_for_analysis))
+    application.add_handler(MessageHandler(filters.TEXT, handle_state_text))
+    application.add_handler(CallbackQueryHandler(callback_handler))
+    application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, post_engagement_handler))
+    application.add_handler(MessageHandler(filters.FORWARDED, track_referral_handler))
+    application.add_handler(MessageHandler(filters.StatusUpdate.MY_CHAT_MEMBER, on_chat_member_update))
+    application.job_queue.run_repeating(daily_report_job, interval=60, first=10)
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    await asyncio.Event().wait()
+if __name__ == "__main__":
+    asyncio.run(main())
