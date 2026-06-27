@@ -2,15 +2,17 @@ import os
 import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
+from aiohttp import web
 from supabase import create_client
-from telegram import Update, ReplyKeyboardMarkup
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, ChatMemberHandler, ContextTypes, filters
-from telegram.error import TelegramError
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+RENDER_URL = os.getenv("RENDER_URL")
+PORT = int(os.getenv("PORT", 8000))
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 MAIN_KEYBOARD = ReplyKeyboardMarkup([["📊 Top Posts"],["👁 Best Engagement"],["🔗 Forward Sources"],["⚙️ Settings"]], resize_keyboard=True)
 BACK_KEYBOARD = ReplyKeyboardMarkup([["🔙 Back to Menu"]], resize_keyboard=True)
@@ -98,25 +100,56 @@ async def member_update_handler(update: Update, context: ContextTypes.DEFAULT_TY
     if update.my_chat_member:
         status = update.my_chat_member.new_chat_member.status
         if status in ["left", "kicked"]:
-            await context.bot.send_message(update.effective_user.id, f"⚠️ Bot was removed from channel: {update.effective_chat.title}")
+            try:
+                await context.bot.send_message(update.effective_user.id, f"⚠️ Bot was removed from channel: {update.effective_chat.title}")
+            except:
+                pass
 async def notify_member_change(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.chat_member:
         user = update.chat_member.new_chat_member.user
         status = update.chat_member.new_chat_member.status
-        if status == "left":
-            await context.bot.send_message(update.effective_user.id, f"👤 User {user.full_name} left the channel.")
-        elif status == "member":
-            await context.bot.send_message(update.effective_user.id, f"👤 User {user.full_name} joined the channel.")
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("addchannel", add_channel))
-    app.add_handler(CommandHandler("done", done))
-    app.add_handler(MessageHandler(filters.TEXT & \
-                                   filters.COMMAND, main_menu))
-    app.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, post_engagement_handler))
-    app.add_handler(ChatMemberHandler(member_update_handler, ChatMemberHandler.MY_CHAT_MEMBER))
-    app.add_handler(ChatMemberHandler(notify_member_change))
-    app.run_polling()
+        try:
+            if status == "left":
+                await context.bot.send_message(update.effective_user.id, f"👤 User {user.full_name} left the channel.")
+            elif status == "member":
+                await context.bot.send_message(update.effective_user.id, f"👤 User {user.full_name} joined the channel.")
+        except:
+            pass
+async def webhook_handler(request, application: Application):
+    try:
+        data = await request.json()
+        update = Update.de_json(data, application.bot)
+        await application.process_update(update)
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+    return web.Response(text="OK")
+async def health_check(request):
+    return web.Response(text="OK")
+async def main():
+    application = Application.builder().token(BOT_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("addchannel", add_channel))
+    application.add_handler(CommandHandler("done", done))
+    application.add_handler(MessageHandler(filters.TEXT & \
+                                           filters.COMMAND, main_menu))
+    application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, post_engagement_handler))
+    application.add_handler(ChatMemberHandler(member_update_handler, ChatMemberHandler.MY_CHAT_MEMBER))
+    application.add_handler(ChatMemberHandler(notify_member_change))
+    app = web.Application()
+    app.router.add_get("/healthz", health_check)
+    app.router.add_post("/webhook", lambda request: webhook_handler(request, application))
+    await application.initialize()
+    await application.start()
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    webhook_url = f"{RENDER_URL}/webhook"
+    try:
+        await application.bot.set_webhook(url=webhook_url)
+        logger.info(f"Webhook set to: {webhook_url}")
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
+    await asyncio.Event().wait()
 if __name__ == "__main__":
     asyncio.run(main())
