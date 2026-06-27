@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from aiohttp import web
 from supabase import create_client
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ChatMemberHandler, ContextTypes, filters
 from telegram.error import TelegramError
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -449,7 +449,7 @@ async def main():
     application.add_handler(CallbackQueryHandler(callback_handler))
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, post_engagement_handler))
     application.add_handler(MessageHandler(filters.FORWARDED, track_referral_handler))
-    application.add_handler(MessageHandler(filters.StatusUpdate.MY_CHAT_MEMBER, on_chat_member_update))
+    application.add_handler(ChatMemberHandler(on_chat_member_update, ChatMemberHandler.MY_CHAT_MEMBER))
     application.job_queue.run_repeating(daily_report_job, interval=60, first=10)
     app = web.Application()
     app.router.add_get("/healthz", health_check)
