@@ -5,6 +5,7 @@ import io
 import logging
 import uuid
 from datetime import datetime, timezone, timedelta
+from urllib.parse import urlparse
 from aiohttp import web
 from supabase import create_client
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
@@ -17,6 +18,7 @@ SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 RENDER_URL = os.getenv("RENDER_URL", "https://your-app.onrender.com")
 PORT = int(os.getenv("PORT", 8000))
+WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "")
 if not all([SUPABASE_URL, SUPABASE_KEY, BOT_TOKEN]):
     raise EnvironmentError("Missing required environment variables.")
 if not RENDER_URL.startswith("https://"):
@@ -46,6 +48,7 @@ async def main_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     days = int(text)
                 else:
                     days = 7
+                    await update.message.reply_text("Invalid number. Using default 7 days.")
                 await show_growth(update, context, days)
             elif state == "awaiting_link_campaign":
                 context.user_data["link_campaign"] = text
@@ -54,6 +57,15 @@ async def main_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
             elif state == "awaiting_link_target":
                 campaign = context.user_data.pop("link_campaign", "campaign")
                 target_url = text
+                if not target_url.startswith(("http://", "https://")):
+                    await update.message.reply_text("Invalid URL. Must start with http:// or https://")
+                    context.user_data.pop("state", None)
+                    return
+                parsed = urlparse(target_url)
+                if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                    await update.message.reply_text("Invalid URL format.")
+                    context.user_data.pop("state", None)
+                    return
                 await create_tracked_link_internal(update, context, campaign, target_url)
             elif state == "awaiting_linkstats_campaign":
                 await show_link_stats(update, context, text)
@@ -232,7 +244,8 @@ async def analyze_post(update: Update, context: ContextTypes.DEFAULT_TYPE, chann
         logger.error(f"Analyze post error: {e}")
         await update.message.reply_text(f"Error: {e}", reply_markup=MAIN_KEYBOARD)
 async def best_time_report(update: Update, context: ContextTypes.DEFAULT_TYPE, channel_id):
-    res = await supabase_execute_async(lambda: supabase.table("post_analytics").select("timestamp, views").eq("chat_id", channel_id).execute())
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    res = await supabase_execute_async(lambda: supabase.table("post_analytics").select("timestamp, views").eq("chat_id", channel_id).gte("timestamp", cutoff).limit(500).execute())
     if not res.data:
         await update.callback_query.edit_message_text("Not enough data.")
         return
@@ -257,7 +270,8 @@ async def best_time_report(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         report += f"{hour}:00 - Avg {avg:.0f} views ({data['count']} posts)\n"
     await update.callback_query.edit_message_text(report)
 async def referral_report(update: Update, context: ContextTypes.DEFAULT_TYPE, channel_id):
-    res = await supabase_execute_async(lambda: supabase.table("referrals").select("from_chat_title").eq("channel_id", channel_id).execute())
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    res = await supabase_execute_async(lambda: supabase.table("referrals").select("from_chat_title").eq("channel_id", channel_id).gte("date", cutoff).limit(500).execute())
     if not res.data:
         await update.callback_query.edit_message_text("No referrals.")
         return
@@ -271,7 +285,8 @@ async def referral_report(update: Update, context: ContextTypes.DEFAULT_TYPE, ch
         report += f"{title}: {count}\n"
     await update.callback_query.edit_message_text(report)
 async def top_posts_report(update: Update, context: ContextTypes.DEFAULT_TYPE, channel_id):
-    res = await supabase_execute_async(lambda: supabase.table("post_analytics").select("*").eq("chat_id", channel_id).execute())
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    res = await supabase_execute_async(lambda: supabase.table("post_analytics").select("*").eq("chat_id", channel_id).gte("timestamp", cutoff).limit(200).execute())
     if not res.data:
         await update.callback_query.edit_message_text("No data.")
         return
@@ -296,19 +311,22 @@ async def compare_posts(update: Update, context: ContextTypes.DEFAULT_TYPE, chan
         logger.error(f"Compare error: {e}")
         await update.message.reply_text(f"Error comparing: {e}", reply_markup=MAIN_KEYBOARD)
 async def export_csv(update: Update, context: ContextTypes.DEFAULT_TYPE, channel_id):
-    res = await supabase_execute_async(lambda: supabase.table("post_analytics").select("*").eq("chat_id", channel_id).order("timestamp").execute())
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+    res = await supabase_execute_async(lambda: supabase.table("post_analytics").select("*").eq("chat_id", channel_id).gte("timestamp", cutoff).order("timestamp").limit(1000).execute())
     if not res.data:
         await update.callback_query.edit_message_text("No data.")
         return
     output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["message_id", "views", "forwards", "engagement_rate", "timestamp"])
-    for row in res.data:
-        writer.writerow([row["message_id"], row["views"], row["forwards"], row.get("engagement_rate", ""), row["timestamp"]])
-    csv_content = output.getvalue()
-    output.close()
-    await context.bot.send_document(chat_id=update.effective_chat.id, document=io.BytesIO(csv_content.encode()), filename="analytics.csv")
-    await update.callback_query.edit_message_text("CSV exported.")
+    try:
+        writer = csv.writer(output)
+        writer.writerow(["message_id", "views", "forwards", "engagement_rate", "timestamp"])
+        for row in res.data:
+            writer.writerow([row["message_id"], row["views"], row["forwards"], row.get("engagement_rate", ""), row["timestamp"]])
+        csv_content = output.getvalue()
+        await context.bot.send_document(chat_id=update.effective_chat.id, document=io.BytesIO(csv_content.encode()), filename="analytics.csv")
+        await update.callback_query.edit_message_text("CSV exported.")
+    finally:
+        output.close()
 async def settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, channel_id):
     keyboard = [
         [InlineKeyboardButton("Set Loss Alert Threshold", callback_data=f"setloss|{channel_id}")],
@@ -319,71 +337,107 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     data = query.data
-    if data.startswith("analyze_channel|"):
-        channel_id = data.split("|")[1]
-        context.user_data["state"] = "awaiting_post_id"
-        context.user_data["analyze_channel_id"] = channel_id
-        await query.edit_message_text("Send post ID:")
-    elif data.startswith("besttime_channel|"):
-        channel_id = data.split("|")[1]
-        await best_time_report(update, context, channel_id)
-    elif data.startswith("referrals_channel|"):
-        channel_id = data.split("|")[1]
-        await referral_report(update, context, channel_id)
-    elif data.startswith("top_channel|"):
-        channel_id = data.split("|")[1]
-        await top_posts_report(update, context, channel_id)
-    elif data.startswith("compare_channel|"):
-        channel_id = data.split("|")[1]
-        context.user_data["state"] = "awaiting_compare_ids"
-        context.user_data["compare_channel_id"] = channel_id
-        await query.edit_message_text("Enter two post IDs separated by space:")
-    elif data.startswith("export_channel|"):
-        channel_id = data.split("|")[1]
-        await export_csv(update, context, channel_id)
-    elif data.startswith("settings_channel|"):
-        channel_id = data.split("|")[1]
-        await settings_menu(update, context, channel_id)
-    elif data.startswith("setloss|"):
-        channel_id = data.split("|")[1]
-        context.user_data["state"] = "awaiting_loss_threshold"
-        context.user_data["settings_channel_id"] = channel_id
-        await query.edit_message_text("Enter loss alert threshold (number):")
-    elif data.startswith("setreport|"):
-        channel_id = data.split("|")[1]
-        context.user_data["state"] = "awaiting_daily_report_time"
-        context.user_data["settings_channel_id"] = channel_id
-        await query.edit_message_text("Enter time (HH:MM, 24h):")
-    elif data.startswith("linkchannel|"):
-        channel_id = data.split("|")[1]
-        pending = context.user_data.pop("pending_link", {})
-        campaign = pending.get("campaign")
-        target_url = pending.get("target_url")
-        if not campaign or not target_url:
-            await query.edit_message_text("Link creation data lost. Please try again.")
-            return
-        unique_id = uuid.uuid4().hex[:8]
-        tracked_url = f"{RENDER_URL}/click/{unique_id}"
-        await supabase_execute_async(lambda: supabase.table("link_clicks").insert({
-            "unique_id": unique_id,
-            "campaign": campaign,
-            "target_url": target_url,
-            "chat_id": channel_id,
-            "clicks": 0,
-            "created_at": datetime.now(timezone.utc).isoformat()
-        }).execute())
-        await query.edit_message_text(f"Link created:\n{tracked_url}")
-    elif data.startswith("track|"):
-        campaign = data.split("|")[1]
-        chat_id = str(query.message.chat.id)
-        res = await supabase_execute_async(lambda: supabase.table("link_clicks").select("*").eq("campaign", campaign).eq("chat_id", chat_id).execute())
-        if res.data:
-            await supabase_execute_async(lambda: supabase.table("link_clicks").update({"clicks": res.data[0]["clicks"] + 1}).eq("campaign", campaign).eq("chat_id", chat_id).execute())
-            await query.edit_message_text(f"Campaign {campaign} link:\n{res.data[0]['target_url']}\n✅ Click recorded.")
+    user_id = update.effective_user.id
+    async def owner_check(channel_id):
+        try:
+            ch_res = await supabase_execute_async(lambda: supabase.table("channels").select("owner_id").eq("chat_id", str(channel_id)).maybe_single().execute())
+            if not ch_res.data or ch_res.data.get("owner_id") != user_id:
+                await query.edit_message_text("Access denied.")
+                return False
+            return True
+        except:
+            await query.edit_message_text("Access denied.")
+            return False
+    try:
+        if data.startswith("analyze_channel|"):
+            channel_id = data.split("|")[1]
+            if not await owner_check(channel_id):
+                return
+            context.user_data["state"] = "awaiting_post_id"
+            context.user_data["analyze_channel_id"] = channel_id
+            await query.edit_message_text("Send post ID:")
+        elif data.startswith("besttime_channel|"):
+            channel_id = data.split("|")[1]
+            if not await owner_check(channel_id):
+                return
+            await best_time_report(update, context, channel_id)
+        elif data.startswith("referrals_channel|"):
+            channel_id = data.split("|")[1]
+            if not await owner_check(channel_id):
+                return
+            await referral_report(update, context, channel_id)
+        elif data.startswith("top_channel|"):
+            channel_id = data.split("|")[1]
+            if not await owner_check(channel_id):
+                return
+            await top_posts_report(update, context, channel_id)
+        elif data.startswith("compare_channel|"):
+            channel_id = data.split("|")[1]
+            if not await owner_check(channel_id):
+                return
+            context.user_data["state"] = "awaiting_compare_ids"
+            context.user_data["compare_channel_id"] = channel_id
+            await query.edit_message_text("Enter two post IDs separated by space:")
+        elif data.startswith("export_channel|"):
+            channel_id = data.split("|")[1]
+            if not await owner_check(channel_id):
+                return
+            await export_csv(update, context, channel_id)
+        elif data.startswith("settings_channel|"):
+            channel_id = data.split("|")[1]
+            if not await owner_check(channel_id):
+                return
+            await settings_menu(update, context, channel_id)
+        elif data.startswith("setloss|"):
+            channel_id = data.split("|")[1]
+            if not await owner_check(channel_id):
+                return
+            context.user_data["state"] = "awaiting_loss_threshold"
+            context.user_data["settings_channel_id"] = channel_id
+            await query.edit_message_text("Enter loss alert threshold (number):")
+        elif data.startswith("setreport|"):
+            channel_id = data.split("|")[1]
+            if not await owner_check(channel_id):
+                return
+            context.user_data["state"] = "awaiting_daily_report_time"
+            context.user_data["settings_channel_id"] = channel_id
+            await query.edit_message_text("Enter time (HH:MM, 24h):")
+        elif data.startswith("linkchannel|"):
+            channel_id = data.split("|")[1]
+            if not await owner_check(channel_id):
+                return
+            pending = context.user_data.pop("pending_link", {})
+            campaign = pending.get("campaign")
+            target_url = pending.get("target_url")
+            if not campaign or not target_url:
+                await query.edit_message_text("Link creation data lost. Please try again.")
+                return
+            unique_id = uuid.uuid4().hex
+            tracked_url = f"{RENDER_URL}/click/{unique_id}"
+            await supabase_execute_async(lambda: supabase.table("link_clicks").insert({
+                "unique_id": unique_id,
+                "campaign": campaign,
+                "target_url": target_url,
+                "chat_id": channel_id,
+                "clicks": 0,
+                "created_at": datetime.now(timezone.utc).isoformat()
+            }).execute())
+            await query.edit_message_text(f"Link created:\n{tracked_url}")
+        else:
+            await query.edit_message_text("Unknown option.")
+    except Exception as e:
+        logger.error(f"Callback error: {e}")
+        try:
+            await query.edit_message_text("An error occurred. Please try again.")
+        except:
+            pass
 async def post_engagement_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.channel_post:
         return
     chat_id = str(update.effective_chat.id)
+    channel_exists = await supabase_execute_async(lambda: supabase.table("channels").select("chat_id").eq("chat_id", chat_id).execute())
+    if not channel_exists.data:
+        return
     msg_id = update.channel_post.message_id
     views = update.channel_post.views or 0
     forwards = update.channel_post.forwards or 0
@@ -408,6 +462,7 @@ async def post_engagement_handler(update: Update, context: ContextTypes.DEFAULT_
         "timestamp": datetime.now(timezone.utc).isoformat()
     }, on_conflict="message_id,chat_id").execute())
     await supabase_execute_async(lambda: supabase.table("channels").upsert({"chat_id": chat_id, "member_count": new_count}, on_conflict="chat_id").execute())
+    await supabase_execute_async(lambda: supabase.table("member_log").insert({"chat_id": chat_id, "count": new_count, "date": datetime.now(timezone.utc).isoformat()}).execute())
     if old_count > 0:
         threshold_res = await supabase_execute_async(lambda: supabase.table("channels").select("loss_alert_threshold").eq("chat_id", chat_id).execute())
         threshold = threshold_res.data[0].get("loss_alert_threshold", 10) if threshold_res.data else 10
@@ -419,7 +474,6 @@ async def post_engagement_handler(update: Update, context: ContextTypes.DEFAULT_
                     await context.bot.send_message(owner_id, f"⚠️ Channel lost {old_count - new_count} members after post {msg_id}.")
                 except TelegramError as e:
                     logger.error(f"Failed to send alert: {e}")
-    await supabase_execute_async(lambda: supabase.table("member_log").insert({"chat_id": chat_id, "count": new_count, "date": datetime.now(timezone.utc).isoformat()}).execute())
 async def track_referral_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and update.message.forward_from_chat:
         fwd_chat = update.message.forward_from_chat
@@ -431,27 +485,50 @@ async def track_referral_handler(update: Update, context: ContextTypes.DEFAULT_T
             "date": datetime.now(timezone.utc).isoformat()
         }).execute())
 async def on_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.my_chat_member and update.my_chat_member.new_chat_member.status == "administrator":
+    if update.my_chat_member:
+        new_status = update.my_chat_member.new_chat_member.status
         chat = update.effective_chat
         if chat.type == "channel":
-            owner_id = update.effective_user.id
-            await supabase_execute_async(lambda: supabase.table("channels").upsert({
-                "chat_id": str(chat.id),
-                "title": chat.title,
-                "owner_id": owner_id,
-                "member_count": 0,
-                "loss_alert_threshold": 10,
-                "daily_report_time": "08:00"
-            }, on_conflict="chat_id").execute())
+            if new_status in ("administrator", "member"):
+                existing = await supabase_execute_async(lambda: supabase.table("channels").select("owner_id").eq("chat_id", str(chat.id)).execute())
+                if not existing.data:
+                    await supabase_execute_async(lambda: supabase.table("channels").insert({
+                        "chat_id": str(chat.id),
+                        "title": chat.title,
+                        "owner_id": update.effective_user.id,
+                        "member_count": 0,
+                        "loss_alert_threshold": 10,
+                        "daily_report_time": "08:00"
+                    }).execute())
+                else:
+                    await supabase_execute_async(lambda: supabase.table("channels").update({"title": chat.title}).eq("chat_id", str(chat.id)).execute())
+            elif new_status in ("left", "kicked"):
+                await supabase_execute_async(lambda: supabase.table("channels").delete().eq("chat_id", str(chat.id)).execute())
+async def log_member_counts_job(context: ContextTypes.DEFAULT_TYPE):
+    channels_res = await supabase_execute_async(lambda: supabase.table("channels").select("chat_id").execute())
+    for ch in channels_res.data:
+        chat_id = ch["chat_id"]
+        try:
+            new_count = await context.bot.get_chat_member_count(chat_id)
+            await supabase_execute_async(lambda: supabase.table("channels").update({"member_count": new_count}).eq("chat_id", chat_id).execute())
+        except Exception as e:
+            logger.error(f"Failed to log member count for {chat_id}: {e}")
 async def daily_report_job(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(timezone.utc).strftime("%H:%M")
     channels_res = await supabase_execute_async(lambda: supabase.table("channels").select("*").execute())
+    sent_key = "daily_report_sent_today"
+    if sent_key not in context.bot_data:
+        context.bot_data[sent_key] = {}
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     for ch in channels_res.data:
         if ch.get("daily_report_time", "08:00") == now:
-            chat_id = ch["chat_id"]
+            channel_key = f"{ch['chat_id']}_{today_str}"
+            if channel_key in context.bot_data[sent_key].get(today_str, set()):
+                continue
+            context.bot_data[sent_key].setdefault(today_str, set()).add(channel_key)
             owner_id = ch["owner_id"]
             cutoff = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-            res = await supabase_execute_async(lambda: supabase.table("member_log").select("*").eq("chat_id", chat_id).gte("date", cutoff).order("date").execute())
+            res = await supabase_execute_async(lambda: supabase.table("member_log").select("*").eq("chat_id", ch["chat_id"]).gte("date", cutoff).order("date").execute())
             if len(res.data) >= 2:
                 first = res.data[0]["count"]
                 last = res.data[-1]["count"]
@@ -461,9 +538,45 @@ async def daily_report_job(context: ContextTypes.DEFAULT_TYPE):
                     await context.bot.send_message(owner_id, report)
                 except TelegramError as e:
                     logger.error(f"Daily report send failed: {e}")
+async def clear_old_report_keys(context: ContextTypes.DEFAULT_TYPE):
+    sent_key = "daily_report_sent_today"
+    if sent_key in context.bot_data:
+        yesterday = (datetime.now(timezone.utc) - timedelta(days=1)).strftime("%Y-%m-%d")
+        context.bot_data[sent_key].pop(yesterday, None)
+async def click_handler(request):
+    unique_id = request.match_info.get("unique_id")
+    res = await supabase_execute_async(lambda: supabase.table("link_clicks").select("*").eq("unique_id", unique_id).execute())
+    if not res.data:
+        return web.Response(text="Link not found", status=404)
+    link = res.data[0]
+    target_url = link["target_url"]
+    success = False
+    for attempt in range(3):
+        try:
+            await supabase_execute_async(lambda: supabase.rpc("increment_link_click", {"uid": unique_id}).execute())
+            success = True
+            break
+        except Exception as e:
+            logger.warning(f"RPC attempt {attempt+1} failed: {e}")
+            try:
+                current = link["clicks"]
+                update_res = await supabase_execute_async(lambda: supabase.table("link_clicks").update({"clicks": current + 1}).eq("unique_id", unique_id).eq("clicks", current).execute())
+                if update_res.data and len(update_res.data) > 0:
+                    success = True
+                    break
+            except:
+                pass
+            await asyncio.sleep(0.1)
+    if not success:
+        logger.error(f"Failed to increment click for {unique_id}")
+    raise web.HTTPFound(target_url)
 async def health_check(request):
     return web.Response(text="OK")
 async def webhook_handler(request, application: Application):
+    if WEBHOOK_SECRET:
+        header_token = request.headers.get("X-Telegram-Bot-Api-Secret-Token", "")
+        if header_token != WEBHOOK_SECRET:
+            return web.Response(status=403)
     try:
         data = await request.json()
         update = Update.de_json(data, application.bot)
@@ -476,35 +589,29 @@ async def main():
     application = Application.builder().token(BOT_TOKEN).job_queue(JobQueue()).updater(None).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancel", cancel))
+    application.add_handler(MessageHandler(filters.FORWARDED, track_referral_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, main_dispatcher))
     application.add_handler(CallbackQueryHandler(callback_handler))
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, post_engagement_handler))
-    application.add_handler(MessageHandler(filters.FORWARDED, track_referral_handler))
     application.add_handler(ChatMemberHandler(on_chat_member_update, ChatMemberHandler.MY_CHAT_MEMBER))
-    now = datetime.now(timezone.utc)
-    for h in range(24):
-        for m in [0]:
-            if (h, m) >= (now.hour, now.minute):
-                first = (h, m)
-                break
-        else:
-            continue
-        break
-    else:
-        first = (0, 0)
-    first_time = datetime.now(timezone.utc).replace(hour=first[0], minute=first[1], second=0, microsecond=0).time()
-    application.job_queue.run_daily(daily_report_job, time=first_time)
     app = web.Application()
     app.router.add_get("/healthz", health_check)
+    app.router.add_get("/click/{unique_id}", click_handler)
     app.router.add_post("/webhook", lambda request: webhook_handler(request, application))
     await application.initialize()
     await application.start()
+    application.job_queue.run_repeating(log_member_counts_job, interval=21600, first=60)
+    application.job_queue.run_repeating(daily_report_job, interval=60, first=1)
+    application.job_queue.run_repeating(clear_old_report_keys, interval=86400, first=3600)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
     webhook_url = f"{RENDER_URL}/webhook"
-    await application.bot.set_webhook(url=webhook_url)
+    try:
+        await application.bot.set_webhook(url=webhook_url, secret_token=WEBHOOK_SECRET if WEBHOOK_SECRET else None)
+    except Exception as e:
+        logger.error(f"Failed to set webhook: {e}")
     await asyncio.Event().wait()
     await application.stop()
     await runner.cleanup()
