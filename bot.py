@@ -7,6 +7,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQu
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+RENDER_URL = os.getenv("RENDER_URL", "https://your-app.onrender.com")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Analytics bot is active.")
@@ -56,8 +57,7 @@ async def create_tracked_link(update: Update, context: ContextTypes.DEFAULT_TYPE
     target_url = context.args[1]
     chat_id = update.effective_chat.id
     unique_id = hashlib.md5(f"{chat_id}{campaign}{datetime.utcnow()}".encode()).hexdigest()[:8]
-    base_url = os.getenv("RENDER_URL", "https://your-bot.onrender.com")
-    tracked_url = f"{base_url}/click/{unique_id}"
+    tracked_url = f"{RENDER_URL}/click/{unique_id}"
     supabase.table("link_clicks").insert({
         "unique_id": unique_id,
         "campaign": campaign,
@@ -181,7 +181,7 @@ async def referral_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         report += f"📌 {title}: {count} forwards\n"
     await update.message.reply_text(report)
 def main():
-    application = Application.builder().token(BOT_TOKEN).connect_timeout(30).read_timeout(30).write_timeout(30).build()
+    application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("analyze", analyze_post))
     application.add_handler(CommandHandler("tracklink", create_tracked_link))
@@ -192,6 +192,11 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_inline_button, pattern="^track_"))
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, post_engagement_buttons))
     application.add_handler(MessageHandler(filters.FORWARDED, track_referral))
-    application.run_polling()
+    webhook_url = f"{RENDER_URL}/webhook"
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.getenv("PORT", 8000)),
+        webhook_url=webhook_url
+    )
 if __name__ == "__main__":
     main()
