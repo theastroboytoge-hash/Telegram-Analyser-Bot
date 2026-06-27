@@ -1,5 +1,5 @@
 import os
-from datetime import datetime, time, timedelta
+from datetime import datetime, timedelta
 import hashlib
 from supabase import create_client
 from telegram import Update
@@ -10,13 +10,6 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("بات آنالیز کانال فعال است.")
-async def track_daily_members(context: ContextTypes.DEFAULT_TYPE):
-    chat_id = context.job.chat_id
-    try:
-        count = await context.bot.get_chat_member_count(chat_id)
-        supabase.table("member_log").insert({"chat_id": str(chat_id), "count": count, "date": datetime.utcnow().isoformat()}).execute()
-    except Exception as e:
-        print(f"Error in daily tracking: {e}")
 async def analyze_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
         await update.message.reply_text("لطفاً آیدی عددی پست را وارد کنید. مثال:\n/analyze 12345")
@@ -29,11 +22,11 @@ async def analyze_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
         forwards = post.forwards or 0
         total_members = await context.bot.get_chat_member_count(chat_id)
         engagement_rate = (views / total_members) * 100 if total_members > 0 else 0
-        prev = supabase.table("member_log").select("*").eq("chat_id", str(chat_id)).order("date", desc=True).limit(1).execute()
+        supabase.table("member_log").insert({"chat_id": str(chat_id), "count": total_members, "date": datetime.utcnow().isoformat()}).execute()
+        prev = supabase.table("member_log").select("*").eq("chat_id", str(chat_id)).order("date", desc=True).limit(2).execute()
         member_change = 0
-        if prev.data:
-            prev_count = prev.data[0]["count"]
-            member_change = total_members - prev_count
+        if len(prev.data) >= 2:
+            member_change = prev.data[0]["count"] - prev.data[1]["count"]
         supabase.table("post_analytics").upsert({
             "message_id": message_id,
             "chat_id": str(chat_id),
@@ -99,12 +92,15 @@ async def best_time_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     hour_map = {}
     for row in res.data:
-        dt = datetime.fromisoformat(row["timestamp"])
-        hour = dt.hour
-        if hour not in hour_map:
-            hour_map[hour] = {"total_views": 0, "count": 0}
-        hour_map[hour]["total_views"] += row["views"]
-        hour_map[hour]["count"] += 1
+        try:
+            dt = datetime.fromisoformat(row["timestamp"])
+            hour = dt.hour
+            if hour not in hour_map:
+                hour_map[hour] = {"total_views": 0, "count": 0}
+            hour_map[hour]["total_views"] += row["views"]
+            hour_map[hour]["count"] += 1
+        except:
+            continue
     if not hour_map:
         await update.message.reply_text("داده کافی وجود ندارد.")
         return
@@ -196,12 +192,6 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_inline_button, pattern="^track_"))
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, post_engagement_buttons))
     application.add_handler(MessageHandler(filters.FORWARDED, track_referral))
-    track_channels = os.getenv("TRACK_CHANNELS", "")
-    if track_channels and track_channels.strip():
-        for chat_id in track_channels.split(","):
-            chat_id = chat_id.strip()
-            if chat_id:
-                application.job_queue.run_daily(track_daily_members, time=time(hour=23, minute=0), chat_id=chat_id)
     application.run_polling()
 if __name__ == "__main__":
     main()
