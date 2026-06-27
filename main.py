@@ -586,7 +586,8 @@ async def webhook_handler(request, application: Application):
         return web.Response(status=500)
     return web.Response()
 async def main():
-    application = Application.builder().token(BOT_TOKEN).job_queue(JobQueue()).updater(None).build()
+    application = Application.builder().token(BOT_TOKEN).build()
+    application.job_queue = JobQueue()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancel", cancel))
     application.add_handler(MessageHandler(filters.FORWARDED, track_referral_handler))
