@@ -29,9 +29,9 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup([
     ["🏆 Top Posts", "📊 Compare Posts"],
     ["📁 Export CSV", "⚙️ Settings"]
 ], resize_keyboard=True)
-async def supabase_execute_async(table, operation, *args, **kwargs):
+async def supabase_execute_async(query_func):
     try:
-        return await asyncio.to_thread(lambda: getattr(supabase.table(table), operation)(*args, **kwargs).execute())
+        return await asyncio.to_thread(query_func)
     except Exception as e:
         logger.error(f"Supabase error: {e}")
         raise
@@ -81,7 +81,7 @@ async def main_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     return
                 threshold = int(text)
                 channel_id = context.user_data.pop("settings_channel_id")
-                await supabase_execute_async("channels", "update", {"loss_alert_threshold": threshold}).eq("chat_id", str(channel_id))
+                await supabase_execute_async(lambda: supabase.table("channels").update({"loss_alert_threshold": threshold}).eq("chat_id", str(channel_id)).execute())
                 await update.message.reply_text(f"Loss alert threshold set to {threshold}.", reply_markup=MAIN_KEYBOARD)
             elif state == "awaiting_daily_report_time":
                 try:
@@ -93,7 +93,7 @@ async def main_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     context.user_data.pop("state", None)
                     return
                 channel_id = context.user_data.pop("settings_channel_id")
-                await supabase_execute_async("channels", "update", {"daily_report_time": f"{hour:02d}:{minute:02d}"}).eq("chat_id", str(channel_id))
+                await supabase_execute_async(lambda: supabase.table("channels").update({"daily_report_time": f"{hour:02d}:{minute:02d}"}).eq("chat_id", str(channel_id)).execute())
                 await update.message.reply_text(f"Daily report time set to {text}.", reply_markup=MAIN_KEYBOARD)
             context.user_data.pop("state", None)
         except Exception as e:
@@ -102,7 +102,7 @@ async def main_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop("state", None)
         return
     if text == "📊 Analyze Post":
-        channels = await supabase_execute_async("channels", "select", "chat_id,title").eq("owner_id", user_id)
+        channels = await supabase_execute_async(lambda: supabase.table("channels").select("chat_id,title").eq("owner_id", user_id).execute())
         if not channels.data:
             await update.message.reply_text("No channels. Add bot as admin to a channel first.", reply_markup=MAIN_KEYBOARD)
             return
@@ -112,7 +112,7 @@ async def main_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "awaiting_growth_days"
         await update.message.reply_text("Enter number of days (default 7):", reply_markup=ReplyKeyboardMarkup([["/cancel"]], resize_keyboard=True))
     elif text == "⏰ Best Time":
-        channels = await supabase_execute_async("channels", "select", "chat_id,title").eq("owner_id", user_id)
+        channels = await supabase_execute_async(lambda: supabase.table("channels").select("chat_id,title").eq("owner_id", user_id).execute())
         if not channels.data:
             await update.message.reply_text("No channels.", reply_markup=MAIN_KEYBOARD)
             return
@@ -125,35 +125,35 @@ async def main_dispatcher(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["state"] = "awaiting_linkstats_campaign"
         await update.message.reply_text("Enter campaign name:", reply_markup=ReplyKeyboardMarkup([["/cancel"]], resize_keyboard=True))
     elif text == "📢 Referrals":
-        channels = await supabase_execute_async("channels", "select", "chat_id,title").eq("owner_id", user_id)
+        channels = await supabase_execute_async(lambda: supabase.table("channels").select("chat_id,title").eq("owner_id", user_id).execute())
         if not channels.data:
             await update.message.reply_text("No channels.", reply_markup=MAIN_KEYBOARD)
             return
         keyboard = [[InlineKeyboardButton(ch["title"], callback_data=f"referrals_channel|{ch['chat_id']}")] for ch in channels.data]
         await update.message.reply_text("Select channel:", reply_markup=InlineKeyboardMarkup(keyboard))
     elif text == "🏆 Top Posts":
-        channels = await supabase_execute_async("channels", "select", "chat_id,title").eq("owner_id", user_id)
+        channels = await supabase_execute_async(lambda: supabase.table("channels").select("chat_id,title").eq("owner_id", user_id).execute())
         if not channels.data:
             await update.message.reply_text("No channels.", reply_markup=MAIN_KEYBOARD)
             return
         keyboard = [[InlineKeyboardButton(ch["title"], callback_data=f"top_channel|{ch['chat_id']}")] for ch in channels.data]
         await update.message.reply_text("Select channel:", reply_markup=InlineKeyboardMarkup(keyboard))
     elif text == "📊 Compare Posts":
-        channels = await supabase_execute_async("channels", "select", "chat_id,title").eq("owner_id", user_id)
+        channels = await supabase_execute_async(lambda: supabase.table("channels").select("chat_id,title").eq("owner_id", user_id).execute())
         if not channels.data:
             await update.message.reply_text("No channels.", reply_markup=MAIN_KEYBOARD)
             return
         keyboard = [[InlineKeyboardButton(ch["title"], callback_data=f"compare_channel|{ch['chat_id']}")] for ch in channels.data]
         await update.message.reply_text("Select channel:", reply_markup=InlineKeyboardMarkup(keyboard))
     elif text == "📁 Export CSV":
-        channels = await supabase_execute_async("channels", "select", "chat_id,title").eq("owner_id", user_id)
+        channels = await supabase_execute_async(lambda: supabase.table("channels").select("chat_id,title").eq("owner_id", user_id).execute())
         if not channels.data:
             await update.message.reply_text("No channels.", reply_markup=MAIN_KEYBOARD)
             return
         keyboard = [[InlineKeyboardButton(ch["title"], callback_data=f"export_channel|{ch['chat_id']}")] for ch in channels.data]
         await update.message.reply_text("Select channel:", reply_markup=InlineKeyboardMarkup(keyboard))
     elif text == "⚙️ Settings":
-        channels = await supabase_execute_async("channels", "select", "chat_id,title").eq("owner_id", user_id)
+        channels = await supabase_execute_async(lambda: supabase.table("channels").select("chat_id,title").eq("owner_id", user_id).execute())
         if not channels.data:
             await update.message.reply_text("No channels.", reply_markup=MAIN_KEYBOARD)
             return
@@ -169,14 +169,14 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Cancelled.", reply_markup=MAIN_KEYBOARD)
 async def show_growth(update: Update, context: ContextTypes.DEFAULT_TYPE, days: int):
     user_id = update.effective_user.id
-    channels = await supabase_execute_async("channels", "select", "chat_id,title").eq("owner_id", user_id)
+    channels = await supabase_execute_async(lambda: supabase.table("channels").select("chat_id,title").eq("owner_id", user_id).execute())
     if not channels.data:
         await update.message.reply_text("No channels.", reply_markup=MAIN_KEYBOARD)
         return
     for ch in channels.data:
         chat_id = ch["chat_id"]
         cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-        res = await supabase_execute_async("member_log", "select", "*").eq("chat_id", chat_id).gte("date", cutoff).order("date")
+        res = await supabase_execute_async(lambda: supabase.table("member_log").select("*").eq("chat_id", chat_id).gte("date", cutoff).order("date").execute())
         if len(res.data) < 2:
             await update.message.reply_text(f"{ch['title']}: Not enough data.")
             continue
@@ -189,7 +189,7 @@ async def show_growth(update: Update, context: ContextTypes.DEFAULT_TYPE, days: 
     await update.message.reply_text("Done.", reply_markup=MAIN_KEYBOARD)
 async def create_tracked_link_internal(update, context, campaign, target_url):
     user_id = update.effective_user.id
-    channels = await supabase_execute_async("channels", "select", "chat_id,title").eq("owner_id", user_id)
+    channels = await supabase_execute_async(lambda: supabase.table("channels").select("chat_id,title").eq("owner_id", user_id).execute())
     if not channels.data:
         await update.message.reply_text("No channels. Add bot to a channel first.", reply_markup=MAIN_KEYBOARD)
         return
@@ -198,13 +198,13 @@ async def create_tracked_link_internal(update, context, campaign, target_url):
     await update.message.reply_text("Select channel for this link:", reply_markup=InlineKeyboardMarkup(keyboard))
 async def show_link_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, campaign):
     user_id = update.effective_user.id
-    channels = await supabase_execute_async("channels", "select", "chat_id,title").eq("owner_id", user_id)
+    channels = await supabase_execute_async(lambda: supabase.table("channels").select("chat_id,title").eq("owner_id", user_id).execute())
     if not channels.data:
         await update.message.reply_text("No channels.", reply_markup=MAIN_KEYBOARD)
         return
     found = False
     for ch in channels.data:
-        res = await supabase_execute_async("link_clicks", "select", "*").eq("campaign", campaign).eq("chat_id", ch["chat_id"])
+        res = await supabase_execute_async(lambda: supabase.table("link_clicks").select("*").eq("campaign", campaign).eq("chat_id", ch["chat_id"]).execute())
         if res.data:
             total_clicks = sum(r["clicks"] for r in res.data)
             await update.message.reply_text(f"{ch['title']}: Campaign {campaign} - {total_clicks} clicks")
@@ -215,7 +215,7 @@ async def show_link_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, ca
         await update.message.reply_text("Done.", reply_markup=MAIN_KEYBOARD)
 async def analyze_post(update: Update, context: ContextTypes.DEFAULT_TYPE, channel_id, message_id):
     try:
-        res = await supabase_execute_async("post_analytics", "select", "*").eq("chat_id", channel_id).eq("message_id", message_id)
+        res = await supabase_execute_async(lambda: supabase.table("post_analytics").select("*").eq("chat_id", channel_id).eq("message_id", message_id).execute())
         if not res.data:
             await update.message.reply_text("Post not found in analytics.", reply_markup=MAIN_KEYBOARD)
             return
@@ -232,7 +232,7 @@ async def analyze_post(update: Update, context: ContextTypes.DEFAULT_TYPE, chann
         logger.error(f"Analyze post error: {e}")
         await update.message.reply_text(f"Error: {e}", reply_markup=MAIN_KEYBOARD)
 async def best_time_report(update: Update, context: ContextTypes.DEFAULT_TYPE, channel_id):
-    res = await supabase_execute_async("post_analytics", "select", "timestamp, views").eq("chat_id", channel_id)
+    res = await supabase_execute_async(lambda: supabase.table("post_analytics").select("timestamp, views").eq("chat_id", channel_id).execute())
     if not res.data:
         await update.callback_query.edit_message_text("Not enough data.")
         return
@@ -257,7 +257,7 @@ async def best_time_report(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         report += f"{hour}:00 - Avg {avg:.0f} views ({data['count']} posts)\n"
     await update.callback_query.edit_message_text(report)
 async def referral_report(update: Update, context: ContextTypes.DEFAULT_TYPE, channel_id):
-    res = await supabase_execute_async("referrals", "select", "from_chat_title").eq("channel_id", channel_id)
+    res = await supabase_execute_async(lambda: supabase.table("referrals").select("from_chat_title").eq("channel_id", channel_id).execute())
     if not res.data:
         await update.callback_query.edit_message_text("No referrals.")
         return
@@ -271,7 +271,7 @@ async def referral_report(update: Update, context: ContextTypes.DEFAULT_TYPE, ch
         report += f"{title}: {count}\n"
     await update.callback_query.edit_message_text(report)
 async def top_posts_report(update: Update, context: ContextTypes.DEFAULT_TYPE, channel_id):
-    res = await supabase_execute_async("post_analytics", "select", "*").eq("chat_id", channel_id)
+    res = await supabase_execute_async(lambda: supabase.table("post_analytics").select("*").eq("chat_id", channel_id).execute())
     if not res.data:
         await update.callback_query.edit_message_text("No data.")
         return
@@ -284,8 +284,8 @@ async def top_posts_report(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     await update.callback_query.edit_message_text(report)
 async def compare_posts(update: Update, context: ContextTypes.DEFAULT_TYPE, channel_id, id1, id2):
     try:
-        p1 = await supabase_execute_async("post_analytics", "select", "*").eq("chat_id", channel_id).eq("message_id", id1)
-        p2 = await supabase_execute_async("post_analytics", "select", "*").eq("chat_id", channel_id).eq("message_id", id2)
+        p1 = await supabase_execute_async(lambda: supabase.table("post_analytics").select("*").eq("chat_id", channel_id).eq("message_id", id1).execute())
+        p2 = await supabase_execute_async(lambda: supabase.table("post_analytics").select("*").eq("chat_id", channel_id).eq("message_id", id2).execute())
         if not p1.data or not p2.data:
             await update.message.reply_text("One or both posts not found.", reply_markup=MAIN_KEYBOARD)
             return
@@ -296,7 +296,7 @@ async def compare_posts(update: Update, context: ContextTypes.DEFAULT_TYPE, chan
         logger.error(f"Compare error: {e}")
         await update.message.reply_text(f"Error comparing: {e}", reply_markup=MAIN_KEYBOARD)
 async def export_csv(update: Update, context: ContextTypes.DEFAULT_TYPE, channel_id):
-    res = await supabase_execute_async("post_analytics", "select", "*").eq("chat_id", channel_id).order("timestamp")
+    res = await supabase_execute_async(lambda: supabase.table("post_analytics").select("*").eq("chat_id", channel_id).order("timestamp").execute())
     if not res.data:
         await update.callback_query.edit_message_text("No data.")
         return
@@ -364,21 +364,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         unique_id = uuid.uuid4().hex[:8]
         tracked_url = f"{RENDER_URL}/click/{unique_id}"
-        await supabase_execute_async("link_clicks", "insert", {
+        await supabase_execute_async(lambda: supabase.table("link_clicks").insert({
             "unique_id": unique_id,
             "campaign": campaign,
             "target_url": target_url,
             "chat_id": channel_id,
             "clicks": 0,
             "created_at": datetime.now(timezone.utc).isoformat()
-        })
+        }).execute())
         await query.edit_message_text(f"Link created:\n{tracked_url}")
     elif data.startswith("track|"):
         campaign = data.split("|")[1]
         chat_id = str(query.message.chat.id)
-        res = await supabase_execute_async("link_clicks", "select", "*").eq("campaign", campaign).eq("chat_id", chat_id)
+        res = await supabase_execute_async(lambda: supabase.table("link_clicks").select("*").eq("campaign", campaign).eq("chat_id", chat_id).execute())
         if res.data:
-            await supabase_execute_async("link_clicks", "update", {"clicks": res.data[0]["clicks"] + 1}).eq("campaign", campaign).eq("chat_id", chat_id)
+            await supabase_execute_async(lambda: supabase.table("link_clicks").update({"clicks": res.data[0]["clicks"] + 1}).eq("campaign", campaign).eq("chat_id", chat_id).execute())
             await query.edit_message_text(f"Campaign {campaign} link:\n{res.data[0]['target_url']}\n✅ Click recorded.")
 async def post_engagement_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.channel_post:
@@ -387,7 +387,7 @@ async def post_engagement_handler(update: Update, context: ContextTypes.DEFAULT_
     msg_id = update.channel_post.message_id
     views = update.channel_post.views or 0
     forwards = update.channel_post.forwards or 0
-    current_count_res = await supabase_execute_async("channels", "select", "member_count").eq("chat_id", chat_id)
+    current_count_res = await supabase_execute_async(lambda: supabase.table("channels").select("member_count").eq("chat_id", chat_id).execute())
     old_count = current_count_res.data[0]["member_count"] if current_count_res.data else 0
     try:
         new_count = await context.bot.get_chat_member_count(chat_id)
@@ -397,7 +397,7 @@ async def post_engagement_handler(update: Update, context: ContextTypes.DEFAULT_
     total_members = new_count
     engagement_rate = (views / total_members * 100) if total_members > 0 else 0
     member_change = new_count - old_count
-    await supabase_execute_async("post_analytics", "upsert", {
+    await supabase_execute_async(lambda: supabase.table("post_analytics").upsert({
         "message_id": msg_id,
         "chat_id": chat_id,
         "views": views,
@@ -406,52 +406,52 @@ async def post_engagement_handler(update: Update, context: ContextTypes.DEFAULT_
         "members_at_time": total_members,
         "member_change_after": member_change,
         "timestamp": datetime.now(timezone.utc).isoformat()
-    }, on_conflict="message_id,chat_id")
-    await supabase_execute_async("channels", "upsert", {"chat_id": chat_id, "member_count": new_count}, on_conflict="chat_id")
+    }, on_conflict="message_id,chat_id").execute())
+    await supabase_execute_async(lambda: supabase.table("channels").upsert({"chat_id": chat_id, "member_count": new_count}, on_conflict="chat_id").execute())
     if old_count > 0:
-        threshold_res = await supabase_execute_async("channels", "select", "loss_alert_threshold").eq("chat_id", chat_id)
+        threshold_res = await supabase_execute_async(lambda: supabase.table("channels").select("loss_alert_threshold").eq("chat_id", chat_id).execute())
         threshold = threshold_res.data[0].get("loss_alert_threshold", 10) if threshold_res.data else 10
         if (old_count - new_count) >= threshold:
-            owner_res = await supabase_execute_async("channels", "select", "owner_id").eq("chat_id", chat_id)
+            owner_res = await supabase_execute_async(lambda: supabase.table("channels").select("owner_id").eq("chat_id", chat_id).execute())
             if owner_res.data:
                 owner_id = owner_res.data[0]["owner_id"]
                 try:
                     await context.bot.send_message(owner_id, f"⚠️ Channel lost {old_count - new_count} members after post {msg_id}.")
                 except TelegramError as e:
                     logger.error(f"Failed to send alert: {e}")
-    await supabase_execute_async("member_log", "insert", {"chat_id": chat_id, "count": new_count, "date": datetime.now(timezone.utc).isoformat()})
+    await supabase_execute_async(lambda: supabase.table("member_log").insert({"chat_id": chat_id, "count": new_count, "date": datetime.now(timezone.utc).isoformat()}).execute())
 async def track_referral_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and update.message.forward_from_chat:
         fwd_chat = update.message.forward_from_chat
-        await supabase_execute_async("referrals", "insert", {
+        await supabase_execute_async(lambda: supabase.table("referrals").insert({
             "channel_id": str(update.effective_chat.id),
             "from_chat_id": str(fwd_chat.id),
             "from_chat_title": fwd_chat.title or "Unknown",
             "message_id": update.message.message_id,
             "date": datetime.now(timezone.utc).isoformat()
-        })
+        }).execute())
 async def on_chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.my_chat_member and update.my_chat_member.new_chat_member.status == "administrator":
         chat = update.effective_chat
         if chat.type == "channel":
             owner_id = update.effective_user.id
-            await supabase_execute_async("channels", "upsert", {
+            await supabase_execute_async(lambda: supabase.table("channels").upsert({
                 "chat_id": str(chat.id),
                 "title": chat.title,
                 "owner_id": owner_id,
                 "member_count": 0,
                 "loss_alert_threshold": 10,
                 "daily_report_time": "08:00"
-            }, on_conflict="chat_id")
+            }, on_conflict="chat_id").execute())
 async def daily_report_job(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(timezone.utc).strftime("%H:%M")
-    channels_res = await supabase_execute_async("channels", "select", "*")
+    channels_res = await supabase_execute_async(lambda: supabase.table("channels").select("*").execute())
     for ch in channels_res.data:
         if ch.get("daily_report_time", "08:00") == now:
             chat_id = ch["chat_id"]
             owner_id = ch["owner_id"]
             cutoff = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
-            res = await supabase_execute_async("member_log", "select", "*").eq("chat_id", chat_id).gte("date", cutoff).order("date")
+            res = await supabase_execute_async(lambda: supabase.table("member_log").select("*").eq("chat_id", chat_id).gte("date", cutoff).order("date").execute())
             if len(res.data) >= 2:
                 first = res.data[0]["count"]
                 last = res.data[-1]["count"]
