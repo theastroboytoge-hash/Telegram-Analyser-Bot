@@ -201,8 +201,6 @@ async def main():
     application.add_handler(CallbackQueryHandler(handle_inline_button, pattern="^track_"))
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, post_engagement_buttons))
     application.add_handler(MessageHandler(filters.FORWARDED, track_referral))
-    webhook_url = f"{RENDER_URL}/webhook"
-    await application.bot.set_webhook(url=webhook_url)
     await application.run_polling()
 if __name__ == "__main__":
     import asyncio
