@@ -1,6 +1,7 @@
 import os
 from datetime import datetime, timedelta
 import hashlib
+from aiohttp import web
 from supabase import create_client
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
@@ -180,7 +181,11 @@ async def referral_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for title, count in sorted_titles:
         report += f"📌 {title}: {count} forwards\n"
     await update.message.reply_text(report)
+async def health_check(request):
+    return web.Response(text="OK")
 def main():
+    app = web.Application()
+    app.router.add_get("/healthz", health_check)
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("analyze", analyze_post))
@@ -195,8 +200,9 @@ def main():
     webhook_url = f"{RENDER_URL}/webhook"
     application.run_webhook(
         listen="0.0.0.0",
-        port=int(os.getenv("PORT", 8000)),
-        webhook_url=webhook_url
+        port=8000,
+        webhook_url=webhook_url,
+        web_app=app
     )
 if __name__ == "__main__":
     main()
