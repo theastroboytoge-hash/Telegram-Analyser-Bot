@@ -7,7 +7,7 @@ from datetime import datetime, timedelta, time
 from aiohttp import web
 from supabase import create_client
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters, ConversationHandler
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -196,9 +196,12 @@ async def post_engagement_handler(update: Update, context: ContextTypes.DEFAULT_
         old_count = 0
     new_count = await context.bot.get_chat_member_count(chat_id)
     supabase.table("channels").upsert({"chat_id": chat_id, "member_count": new_count}, on_conflict="chat_id").execute()
-    if old_count > 0 and (old_count - new_count) >= (supabase.table("channels").select("loss_alert_threshold").eq("chat_id", chat_id).execute().data[0].get("loss_alert_threshold", 10)):
-        owner_id = supabase.table("channels").select("owner_id").eq("chat_id", chat_id).execute().data[0]["owner_id"]
-        await context.bot.send_message(owner_id, f"⚠️ Channel lost {old_count - new_count} members after post {msg_id}.")
+    if old_count > 0:
+        threshold_data = supabase.table("channels").select("loss_alert_threshold").eq("chat_id", chat_id).execute()
+        threshold = threshold_data.data[0].get("loss_alert_threshold", 10) if threshold_data.data else 10
+        if (old_count - new_count) >= threshold:
+            owner_id = supabase.table("channels").select("owner_id").eq("chat_id", chat_id).execute().data[0]["owner_id"]
+            await context.bot.send_message(owner_id, f"⚠️ Channel lost {old_count - new_count} members after post {msg_id}.")
     supabase.table("member_log").insert({"chat_id": chat_id, "count": new_count, "date": datetime.utcnow().isoformat()}).execute()
 async def track_referral_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message and update.message.forward_from_chat:
@@ -350,5 +353,4 @@ async def referral_report(update: Update, context: ContextTypes.DEFAULT_TYPE, ch
     for title, count in sorted_titles:
         report += f"{title}: {count}\n"
     await update.callback_query.edit_message_text(report)
-async def top_posts_report(update: Update, context: ContextTypes.DEFAULT_TYPE, channel_id):
-    res = supabase.table("post_analytics").select("*").eq("chat_id"
+async def top_posts_report(update: Update, context: ContextTypes.
