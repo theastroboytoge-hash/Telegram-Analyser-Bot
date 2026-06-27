@@ -276,7 +276,8 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             supabase.table("link_clicks").update({"clicks": res.data[0]["clicks"] + 1}).eq("campaign", campaign).eq("chat_id", chat_id).execute()
             await query.edit_message_text(f"Campaign {campaign} link:\n{res.data[0]['target_url']}\n✅ Click recorded.")
             async def handle_post_id_for_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
-                if context.user_data.get("state") == "awaiting_post_id":
+async def handle_post_id_for_analysis(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.user_data.get("state") == "awaiting_post_id":
         message_id = int(update.message.text)
         channel_id = context.user_data.pop("analyze_channel_id")
         await analyze_post(update, context, channel_id, message_id)
