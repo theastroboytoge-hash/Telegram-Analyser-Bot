@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from aiohttp import web
 from supabase import create_client
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ChatMemberHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ChatMemberHandler, JobQueue, ContextTypes, filters
 from telegram.error import TelegramError
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -442,7 +442,7 @@ async def webhook_handler(request, application: Application):
         print(f"Webhook error: {e}")
     return web.Response()
 async def main():
-    application = Application.builder().token(BOT_TOKEN).updater(None).build()
+    application = Application.builder().token(BOT_TOKEN).job_queue(JobQueue()).updater(None).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancel", cancel))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, main_dispatcher))
