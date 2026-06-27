@@ -1,4 +1,4 @@
 aiohttp==3.9.1
-supabase==2.0.3
+supabase==2.5.3
 python-telegram-bot[job-queue]==20.7
 python-dotenv==1.0.0
