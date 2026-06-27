@@ -2,7 +2,7 @@ import os
 from datetime import datetime, time, timedelta
 import hashlib
 from supabase import create_client
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ContextTypes, filters
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
@@ -184,14 +184,6 @@ async def referral_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for title, count in sorted_titles:
         report += f"📌 {title}: {count} فوروارد\n"
     await update.message.reply_text(report)
-async def click_webhook(request):
-    unique_id = request.match_info.get("unique_id")
-    res = supabase.table("link_clicks").select("*").eq("unique_id", unique_id).execute()
-    if not res.data:
-        return aiohttp.web.Response(text="Link not found", status=404)
-    supabase.table("link_clicks").update({"clicks": res.data[0]["clicks"] + 1}).eq("unique_id", unique_id).execute()
-    target = res.data[0]["target_url"]
-    raise aiohttp.web.HTTPFound(target)
 def main():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
@@ -204,9 +196,12 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_inline_button, pattern="^track_"))
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, post_engagement_buttons))
     application.add_handler(MessageHandler(filters.FORWARDED, track_referral))
-    for chat_id in os.getenv("TRACK_CHANNELS", "").split(","):
-        if chat_id.strip():
-            application.job_queue.run_daily(track_daily_members, time=time(hour=23, minute=0), chat_id=chat_id.strip())
+    track_channels = os.getenv("TRACK_CHANNELS", "")
+    if track_channels and track_channels.strip():
+        for chat_id in track_channels.split(","):
+            chat_id = chat_id.strip()
+            if chat_id:
+                application.job_queue.run_daily(track_daily_members, time=time(hour=23, minute=0), chat_id=chat_id)
     application.run_polling()
 if __name__ == "__main__":
     main()
