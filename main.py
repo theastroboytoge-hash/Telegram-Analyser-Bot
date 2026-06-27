@@ -528,7 +528,8 @@ async def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("cancel", cancel))
     application.add_handler(MessageHandler(filters.FORWARDED, track_referral_handler))
-    application.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, main_dispatcher))
+    application.add_handler(MessageHandler(filters.TEXT & \
+                                           filters.COMMAND, main_dispatcher))
     application.add_handler(CallbackQueryHandler(callback_handler))
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, post_engagement_handler))
     application.add_handler(ChatMemberHandler(on_chat_member_update, ChatMemberHandler.MY_CHAT_MEMBER))
