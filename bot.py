@@ -1,6 +1,7 @@
 import os
-from datetime import datetime, timedelta
 import hashlib
+import asyncio
+from datetime import datetime, timedelta
 from aiohttp import web
 from supabase import create_client
 from telegram import Update
@@ -9,6 +10,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 RENDER_URL = os.getenv("RENDER_URL", "https://your-app.onrender.com")
+PORT = int(os.getenv("PORT", 8000))
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Analytics bot is active.")
@@ -188,7 +190,7 @@ async def main():
     app.router.add_get("/healthz", health_check)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", 8000)
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
     await site.start()
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
@@ -201,7 +203,9 @@ async def main():
     application.add_handler(CallbackQueryHandler(handle_inline_button, pattern="^track_"))
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, post_engagement_buttons))
     application.add_handler(MessageHandler(filters.FORWARDED, track_referral))
-    await application.run_polling()
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+    await asyncio.Event().wait()
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())
