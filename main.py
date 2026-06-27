@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone, timedelta
 from aiohttp import web
 from supabase import create_client
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ChatMemberHandler, ContextTypes, filters
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
