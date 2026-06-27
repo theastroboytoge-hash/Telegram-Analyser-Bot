@@ -1,6 +1,8 @@
 import os
+import asyncio
 import logging
 from datetime import datetime, timezone, timedelta
+from aiohttp import web
 from supabase import create_client
 from telegram import Update, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, ChatMemberHandler, ContextTypes, filters
@@ -9,6 +11,8 @@ logger = logging.getLogger(__name__)
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
+RENDER_URL = os.getenv("RENDER_URL")
+PORT = int(os.getenv("PORT", 8000))
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 MAIN_KEYBOARD = ReplyKeyboardMarkup([["📊 Top Posts"],["👁 Best Engagement"],["🔗 Forward Sources"],["⚙️ Settings"]], resize_keyboard=True)
 BACK_KEYBOARD = ReplyKeyboardMarkup([["🔙 Back"]], resize_keyboard=True)
@@ -72,14 +76,40 @@ async def show_forward_sources(update: Update, chat_id):
     await update.message.reply_text(text, reply_markup=BACK_KEYBOARD)
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.channel_post:
-        logger.info("Channel post received")
-def main():
+        logger.info("CHANNEL POST RECEIVED")
+async def webhook_handler(request, application: Application):
+    try:
+        data = await request.json()
+        logger.info("WEBHOOK RECEIVED UPDATE")
+        update = Update.de_json(data, application.bot)
+        await application.process_update(update)
+    except Exception as e:
+        logger.error(f"Webhook error: {e}")
+    return web.Response(text="OK")
+async def health_check(request):
+    return web.Response(text="OK")
+async def main():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & \
                                            filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.FORWARDED, register_channel))
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, channel_post_handler))
-    application.run_polling()
+    app = web.Application()
+    app.router.add_get("/healthz", health_check)
+    app.router.add_post("/webhook", lambda r: webhook_handler(r, application))
+    await application.initialize()
+    await application.start()
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", PORT)
+    await site.start()
+    webhook_url = f"{RENDER_URL}/webhook"
+    try:
+        await application.bot.set_webhook(url=webhook_url)
+        logger.info(f"WEBHOOK SET SUCCESSFULLY: {webhook_url}")
+    except Exception as e:
+        logger.error(f"Webhook set failed: {e}")
+    await asyncio.Event().wait()
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
