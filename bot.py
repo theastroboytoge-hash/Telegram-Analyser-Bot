@@ -9,10 +9,10 @@ SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("بات آنالیز کانال فعال است.")
+    await update.message.reply_text("Analytics bot is active.")
 async def analyze_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("لطفاً آیدی عددی پست را وارد کنید. مثال:\n/analyze 12345")
+        await update.message.reply_text("Please enter post ID.\nExample: /analyze 12345")
         return
     message_id = int(context.args[0])
     chat_id = update.effective_chat.id
@@ -38,19 +38,19 @@ async def analyze_post(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "timestamp": datetime.utcnow().isoformat()
         }, on_conflict="message_id,chat_id").execute()
         report = (
-            f"📊 تحلیل پست {message_id}\n"
-            f"👁 ویو: {views}\n"
-            f"🔄 فوروارد: {forwards}\n"
-            f"📈 نرخ تعامل: {engagement_rate:.1f}%\n"
-            f"👥 اعضا هنگام پست: {total_members}\n"
-            f"📉 تغییر اعضا پس از پست: {member_change:+d}\n"
+            f"📊 Post Analysis #{message_id}\n"
+            f"👁 Views: {views}\n"
+            f"🔄 Forwards: {forwards}\n"
+            f"📈 Engagement Rate: {engagement_rate:.1f}%\n"
+            f"👥 Members at Post Time: {total_members}\n"
+            f"📉 Member Change After Post: {member_change:+d}\n"
         )
         await update.message.reply_text(report)
     except Exception as e:
-        await update.message.reply_text(f"خطا: {e}")
+        await update.message.reply_text(f"Error: {e}")
 async def create_tracked_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args or len(context.args) < 2:
-        await update.message.reply_text("استفاده: /tracklink <نام_کمپین> <لینک_هدف>\nمثال: /tracklink offer1 https://example.com")
+        await update.message.reply_text("Usage: /tracklink <campaign_name> <target_url>\nExample: /tracklink offer1 https://example.com")
         return
     campaign = context.args[0]
     target_url = context.args[1]
@@ -67,28 +67,28 @@ async def create_tracked_link(update: Update, context: ContextTypes.DEFAULT_TYPE
         "created_at": datetime.utcnow().isoformat()
     }).execute()
     await update.message.reply_text(
-        f"🔗 لینک رهگیر ساخته شد:\n{tracked_url}\n\n"
-        f"کمپین: {campaign}\n"
-        f"هدف: {target_url}\n\n"
-        f"این لینک را در پست‌های خود استفاده کنید."
+        f"🔗 Tracked link created:\n{tracked_url}\n\n"
+        f"Campaign: {campaign}\n"
+        f"Target: {target_url}\n\n"
+        f"Use this link in your posts."
     )
 async def link_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("استفاده: /linkstats <نام_کمپین>")
+        await update.message.reply_text("Usage: /linkstats <campaign_name>")
         return
     campaign = context.args[0]
     chat_id = update.effective_chat.id
     res = supabase.table("link_clicks").select("*").eq("campaign", campaign).eq("chat_id", str(chat_id)).execute()
     if not res.data:
-        await update.message.reply_text("کمپینی با این نام یافت نشد.")
+        await update.message.reply_text("Campaign not found.")
         return
     total_clicks = sum(r["clicks"] for r in res.data)
-    await update.message.reply_text(f"📊 آمار کمپین {campaign}:\n🖱 تعداد کل کلیک‌ها: {total_clicks}")
+    await update.message.reply_text(f"📊 Campaign {campaign}:\n🖱 Total Clicks: {total_clicks}")
 async def best_time_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     res = supabase.table("post_analytics").select("timestamp, views").eq("chat_id", str(chat_id)).execute()
     if not res.data:
-        await update.message.reply_text("هنوز داده کافی برای تحلیل بهترین زمان ارسال وجود ندارد.")
+        await update.message.reply_text("Not enough data yet.")
         return
     hour_map = {}
     for row in res.data:
@@ -102,13 +102,13 @@ async def best_time_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             continue
     if not hour_map:
-        await update.message.reply_text("داده کافی وجود ندارد.")
+        await update.message.reply_text("Not enough data.")
         return
     sorted_hours = sorted(hour_map.items(), key=lambda x: x[1]["total_views"]/x[1]["count"], reverse=True)[:5]
-    report = "⏰ بهترین ساعات ارسال (بر اساس میانگین ویو):\n\n"
+    report = "⏰ Best Posting Times (by average views):\n\n"
     for hour, data in sorted_hours:
         avg = data["total_views"] / data["count"]
-        report += f"🕐 ساعت {hour}:00 - میانگین {avg:.0f} ویو (از {data['count']} پست)\n"
+        report += f"🕐 {hour}:00 - Avg {avg:.0f} views ({data['count']} posts)\n"
     await update.message.reply_text(report)
 async def channel_growth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -118,16 +118,16 @@ async def channel_growth(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cutoff = (datetime.utcnow() - timedelta(days=days)).isoformat()
     res = supabase.table("member_log").select("*").eq("chat_id", str(chat_id)).gte("date", cutoff).order("date").execute()
     if len(res.data) < 2:
-        await update.message.reply_text("داده کافی برای تحلیل رشد وجود ندارد.")
+        await update.message.reply_text("Not enough data for growth analysis.")
         return
     first = res.data[0]["count"]
     last = res.data[-1]["count"]
     growth = last - first
     growth_percent = (growth / first * 100) if first > 0 else 0
     report = (
-        f"📈 رشد کانال در {days} روز گذشته:\n"
-        f"👥 اعضا: از {first} به {last}\n"
-        f"📊 تغییر: {growth:+d} ({growth_percent:+.1f}%)\n"
+        f"📈 Channel Growth ({days} days):\n"
+        f"👥 Members: {first} → {last}\n"
+        f"📊 Change: {growth:+d} ({growth_percent:+.1f}%)\n"
     )
     await update.message.reply_text(report)
 async def handle_inline_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -140,7 +140,7 @@ async def handle_inline_button(update: Update, context: ContextTypes.DEFAULT_TYP
         res = supabase.table("link_clicks").select("*").eq("campaign", campaign).eq("chat_id", chat_id).execute()
         if res.data:
             supabase.table("link_clicks").update({"clicks": res.data[0]["clicks"] + 1}).eq("campaign", campaign).eq("chat_id", chat_id).execute()
-            await query.edit_message_text(f"لینک کمپین {campaign}:\n{res.data[0]['target_url']}\n\n✅ کلیک شما ثبت شد.")
+            await query.edit_message_text(f"Campaign {campaign} link:\n{res.data[0]['target_url']}\n\n✅ Click recorded.")
 async def post_engagement_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.channel_post:
         return
@@ -169,19 +169,19 @@ async def referral_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     res = supabase.table("referrals").select("from_chat_title").eq("channel_id", str(chat_id)).execute()
     if not res.data:
-        await update.message.reply_text("هنوز داده فورواردی ثبت نشده است.")
+        await update.message.reply_text("No forward data recorded yet.")
         return
     counts = {}
     for row in res.data:
         title = row["from_chat_title"]
         counts[title] = counts.get(title, 0) + 1
     sorted_titles = sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]
-    report = "📢 کانال‌هایی که بیشترین فوروارد را داشته‌اند:\n\n"
+    report = "📢 Top Forwarding Channels:\n\n"
     for title, count in sorted_titles:
-        report += f"📌 {title}: {count} فوروارد\n"
+        report += f"📌 {title}: {count} forwards\n"
     await update.message.reply_text(report)
 def main():
-    application = Application.builder().token(BOT_TOKEN).build()
+    application = Application.builder().token(BOT_TOKEN).connect_timeout(30).read_timeout(30).write_timeout(30).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("analyze", analyze_post))
     application.add_handler(CommandHandler("tracklink", create_tracked_link))
