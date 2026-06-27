@@ -17,23 +17,28 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 MAIN_KEYBOARD = ReplyKeyboardMarkup([["📊 Top Posts"],["👁 Best Engagement"],["🔗 Forward Sources"],["⚙️ Settings"]], resize_keyboard=True)
 BACK_KEYBOARD = ReplyKeyboardMarkup([["🔙 Back to Menu"]], resize_keyboard=True)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("Start command received")
     await update.message.reply_text(
         "Welcome to Channel Analytics Bot!\n\n"
-        "Please add the bot as Administrator to your channel.\n"
-        "After that, forward any message from your channel here.",
+        "To register your channel:\n"
+        "1. Add bot as Administrator to your channel\n"
+        "2. Forward any message from your channel here",
         reply_markup=MAIN_KEYBOARD
     )
-async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not update.message or not update.message.text:
+        return
+    text = update.message.text.strip()
+    logger.info(f"Received text: {text}")
     if text == "🔙 Back to Menu":
         await update.message.reply_text("Main Menu:", reply_markup=MAIN_KEYBOARD)
         return
     user_id = update.effective_user.id
-    channels = await supabase.table("channels").select("*").eq("owner_id", user_id).execute()
-    if not channels.data:
-        await update.message.reply_text("No channel registered yet.\nPlease forward a message from your channel to register it.", reply_markup=MAIN_KEYBOARD)
+    channels_res = await supabase.table("channels").select("*").eq("owner_id", user_id).execute()
+    if not channels_res.data:
+        await update.message.reply_text("No channel registered.\nPlease forward a message from your channel first.", reply_markup=MAIN_KEYBOARD)
         return
-    channel = channels.data[0]
+    channel = channels_res.data[0]
     if text == "📊 Top Posts":
         await show_top_posts(update, channel["chat_id"])
     elif text == "👁 Best Engagement":
@@ -41,7 +46,25 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🔗 Forward Sources":
         await show_referrals(update, channel["chat_id"])
     elif text == "⚙️ Settings":
-        await update.message.reply_text("Settings will be added later.", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Settings will be added in future updates.", reply_markup=MAIN_KEYBOARD)
+    else:
+        await update.message.reply_text("Please use the keyboard buttons.", reply_markup=MAIN_KEYBOARD)
+async def register_channel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message and update.message.forward_from_chat:
+        chat = update.message.forward_from_chat
+        user_id = update.effective_user.id
+        logger.info(f"Registering channel: {chat.title} by user {user_id}")
+        try:
+            await supabase.table("channels").upsert({
+                "chat_id": str(chat.id),
+                "title": chat.title,
+                "owner_id": user_id,
+                "member_count": 0
+            }).execute()
+            await update.message.reply_text(f"✅ Channel '{chat.title}' registered successfully!", reply_markup=MAIN_KEYBOARD)
+        except Exception as e:
+            logger.error(f"Register error: {e}")
+            await update.message.reply_text("Error while registering channel.")
 async def show_top_posts(update: Update, chat_id):
     cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
     res = await supabase.table("post_analytics").select("*").eq("chat_id", chat_id).gte("timestamp", cutoff).limit(10).execute()
@@ -76,24 +99,10 @@ async def show_referrals(update: Update, chat_id):
     for title, count in sorted(counts.items(), key=lambda x: x[1], reverse=True)[:10]:
         text += f"• {title}: {count} times\n"
     await update.message.reply_text(text, reply_markup=BACK_KEYBOARD)
-async def register_channel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.forward_from_chat:
-        chat = update.message.forward_from_chat
-        user_id = update.effective_user.id
-        try:
-            await supabase.table("channels").upsert({
-                "chat_id": str(chat.id),
-                "title": chat.title,
-                "owner_id": user_id,
-                "member_count": 0
-            }).execute()
-            await update.message.reply_text(f"✅ Channel '{chat.title}' registered successfully!", reply_markup=MAIN_KEYBOARD)
-        except Exception as e:
-            logger.error(f"Register error: {e}")
-            await update.message.reply_text("Error registering channel.")
 async def post_engagement_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.channel_post:
         return
+    logger.info(f"Channel post received: {update.channel_post.message_id}")
     chat_id = str(update.effective_chat.id)
     msg = update.channel_post
     views = msg.views or 0
@@ -110,25 +119,6 @@ async def post_engagement_handler(update: Update, context: ContextTypes.DEFAULT_
         "members_at_time": member_count,
         "timestamp": datetime.now(timezone.utc).isoformat()
     }, on_conflict="chat_id,message_id").execute()
-async def member_update_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.my_chat_member:
-        status = update.my_chat_member.new_chat_member.status
-        if status in ["left", "kicked"]:
-            try:
-                await context.bot.send_message(update.effective_user.id, f"⚠️ Bot was removed from channel: {update.effective_chat.title}")
-            except:
-                pass
-async def notify_member_change(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.chat_member:
-        user = update.chat_member.new_chat_member.user
-        status = update.chat_member.new_chat_member.status
-        try:
-            if status == "left":
-                await context.bot.send_message(update.effective_user.id, f"👤 User {user.full_name} left the channel.")
-            elif status == "member":
-                await context.bot.send_message(update.effective_user.id, f"👤 User {user.full_name} joined the channel.")
-        except:
-            pass
 async def webhook_handler(request, application: Application):
     try:
         data = await request.json()
@@ -143,11 +133,10 @@ async def main():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & \
-                                           filters.COMMAND, main_menu))
+                                           filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.FORWARDED, register_channel_handler))
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, post_engagement_handler))
-    application.add_handler(ChatMemberHandler(member_update_handler, ChatMemberHandler.MY_CHAT_MEMBER))
-    application.add_handler(ChatMemberHandler(notify_member_change))
+    application.add_handler(ChatMemberHandler(lambda u, c: None, ChatMemberHandler.MY_CHAT_MEMBER))
     app = web.Application()
     app.router.add_get("/healthz", health_check)
     app.router.add_post("/webhook", lambda request: webhook_handler(request, application))
@@ -160,7 +149,7 @@ async def main():
     webhook_url = f"{RENDER_URL}/webhook"
     try:
         await application.bot.set_webhook(url=webhook_url)
-        logger.info(f"Webhook set successfully: {webhook_url}")
+        logger.info(f"Webhook set to: {webhook_url}")
     except Exception as e:
         logger.error(f"Failed to set webhook: {e}")
     await asyncio.Event().wait()
