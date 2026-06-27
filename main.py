@@ -21,7 +21,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Welcome to Channel Analytics Bot!\n\n"
         "To register your channel:\n"
-        "1. Add bot as Administrator to your channel\n"
+        "1. Add bot as Administrator\n"
         "2. Forward any message from your channel here",
         reply_markup=MAIN_KEYBOARD
     )
@@ -46,11 +46,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "🔗 Forward Sources":
         await show_referrals(update, channel["chat_id"])
     elif text == "⚙️ Settings":
-        await update.message.reply_text("Settings will be added in future updates.", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Settings will be added later.", reply_markup=MAIN_KEYBOARD)
     else:
         await update.message.reply_text("Please use the keyboard buttons.", reply_markup=MAIN_KEYBOARD)
 async def register_channel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message and update.message.forward_from_chat:
+    if update.message and getattr(update.message, 'forward_from_chat', None):
         chat = update.message.forward_from_chat
         user_id = update.effective_user.id
         logger.info(f"Registering channel: {chat.title} by user {user_id}")
@@ -64,7 +64,9 @@ async def register_channel_handler(update: Update, context: ContextTypes.DEFAULT
             await update.message.reply_text(f"✅ Channel '{chat.title}' registered successfully!", reply_markup=MAIN_KEYBOARD)
         except Exception as e:
             logger.error(f"Register error: {e}")
-            await update.message.reply_text("Error while registering channel.")
+            await update.message.reply_text("Error registering channel.")
+    else:
+        logger.info("Not a forwarded message")
 async def show_top_posts(update: Update, chat_id):
     cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
     res = await supabase.table("post_analytics").select("*").eq("chat_id", chat_id).gte("timestamp", cutoff).limit(10).execute()
@@ -136,7 +138,6 @@ async def main():
                                            filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.FORWARDED, register_channel_handler))
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, post_engagement_handler))
-    application.add_handler(ChatMemberHandler(lambda u, c: None, ChatMemberHandler.MY_CHAT_MEMBER))
     app = web.Application()
     app.router.add_get("/healthz", health_check)
     app.router.add_post("/webhook", lambda request: webhook_handler(request, application))
