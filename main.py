@@ -112,7 +112,8 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("addchannel", add_channel))
     app.add_handler(CommandHandler("done", done))
-    app.add_handler(MessageHandler(filters.TEXT & \~filters.COMMAND, main_menu))
+    app.add_handler(MessageHandler(filters.TEXT & \
+                                   filters.COMMAND, main_menu))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, post_engagement_handler))
     app.add_handler(ChatMemberHandler(member_update_handler, ChatMemberHandler.MY_CHAT_MEMBER))
     app.add_handler(ChatMemberHandler(notify_member_change))
