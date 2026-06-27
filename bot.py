@@ -183,9 +183,13 @@ async def referral_report(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(report)
 async def health_check(request):
     return web.Response(text="OK")
-def main():
+async def main():
     app = web.Application()
     app.router.add_get("/healthz", health_check)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 8000)
+    await site.start()
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("analyze", analyze_post))
@@ -198,11 +202,8 @@ def main():
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, post_engagement_buttons))
     application.add_handler(MessageHandler(filters.FORWARDED, track_referral))
     webhook_url = f"{RENDER_URL}/webhook"
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=8000,
-        webhook_url=webhook_url,
-        web_app=app
-    )
+    await application.bot.set_webhook(url=webhook_url)
+    await application.run_polling()
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())
