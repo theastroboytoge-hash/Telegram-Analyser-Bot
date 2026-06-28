@@ -34,16 +34,16 @@ def get_lyrics_sync(song_name, artist_name=None):
     try:
         if not song_name or not song_name.strip():
             return None
-        api = genius.Genius(GENIUS_TOKEN)
-        api.verbose = False
-        api.remove_section_headers = True
-        if artist_name and artist_name.strip():
-            song = api.search_song(song_name.strip(), artist_name.strip())
-        else:
-            song = api.search_song(song_name.strip())
-        return song.lyrics if song else None
+
+        # استفاده از lyriq برای دریافت متن
+        lyrics_obj = get_lyrics_lyriq(song_name.strip(), artist_name.strip() if artist_name else None)
+        
+        if lyrics_obj and hasattr(lyrics_obj, 'plain_lyrics'):
+            return lyrics_obj.plain_lyrics
+        return None
+
     except Exception as e:
-        logger.error(f"Genius Error: {e}")
+        logger.error(f"Lyriq Error: {e}")
         return None
 
 def get_genres_sync(song_name, artist_name):
