@@ -21,7 +21,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     user_id = update.effective_user.id
-    logger.info(f"TEXT RECEIVED from {user_id}: {text}")
+    logger.info(f"TEXT HANDLER TRIGGERED from {user_id}: '{text}'")
     if text == "🔙 Back":
         await update.message.reply_text("Main Menu", reply_markup=MAIN_KEYBOARD)
         return
@@ -40,19 +40,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "⚙️ Settings":
         await update.message.reply_text("⚙️ Settings under development...", reply_markup=BACK_KEYBOARD)
     else:
-        await update.message.reply_text("Unknown command. Use the menu.", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("Unknown command. Use the menu below.", reply_markup=MAIN_KEYBOARD)
 async def register_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     if not message:
         return
-    if not message.forward_origin:
+    if not message.forward_origin and not getattr(message, 'forward_from_chat', None):
         await message.reply_text("Please forward a message from your channel.")
         return
-    chat = None
-    if hasattr(message.forward_origin, 'chat'):
-        chat = message.forward_origin.chat
-    elif hasattr(message, 'forward_from_chat'):
-        chat = message.forward_from_chat
+    chat = getattr(message.forward_origin, 'chat', None) or getattr(message, 'forward_from_chat', None)
     if not chat or chat.type not in ['channel', 'supergroup']:
         await message.reply_text("Only channels and supergroups are supported.")
         return
@@ -133,9 +129,9 @@ async def health_check(request):
 async def main():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & \
-filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.FORWARDED, register_channel))
+    application.add_handler(MessageHandler(filters.TEXT & \
+                                           filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, channel_post_handler))
     app = web.Application()
     app.router.add_get("/healthz", health_check)
