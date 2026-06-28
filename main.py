@@ -8,16 +8,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ---------- توکن‌ها ----------
+# ---------- Tokens ----------
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 GENIUS_TOKEN = os.getenv('GENIUS_TOKEN')
-# TheAudioDB نیازی به کلید ندارد (کلید 1 برای تست رایگان است)
-AUDIODB_KEY = '1'
+LASTFM_API_KEY = os.getenv('LASTFM_API_KEY')
 
-# ---------- تنظیمات لاگ ----------
+# ---------- Logging ----------
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-# ---------- دریافت متن از Genius ----------
+# ---------- Get Lyrics from Genius ----------
 def get_lyrics(song_name, artist_name=None):
     try:
         api = genius.Genius(GENIUS_TOKEN)
@@ -32,32 +31,46 @@ def get_lyrics(song_name, artist_name=None):
         logging.error(f"Genius Error: {e}")
         return None
 
-# ---------- دریافت ژانر از TheAudioDB ----------
-def get_genre(song_name, artist_name):
+# ---------- Get Genres from Last.fm ----------
+def get_genres(song_name, artist_name):
     try:
-        url = f"https://www.theaudiodb.com/api/v1/json/{AUDIODB_KEY}/searchtrack.php?s={artist_name}&t={song_name}"
-        response = requests.get(url)
+        url = "http://ws.audioscrobbler.com/2.0/"
+        params = {
+            'method': 'track.getInfo',
+            'api_key': LASTFM_API_KEY,
+            'artist': artist_name,
+            'track': song_name,
+            'format': 'json'
+        }
+        response = requests.get(url, params=params)
         data = response.json()
-        if data.get('track'):
-            return data['track'][0].get('strGenre', 'ناشناس')
+        
+        if 'track' in data and 'toptags' in data['track']:
+            tags = data['track']['toptags'].get('tag', [])
+            if tags:
+                # Get top 5 genres (or fewer if less exist)
+                genre_list = [tag['name'] for tag in tags[:5]]
+                return genre_list
         return None
     except Exception as e:
-        logging.error(f"Genre Error: {e}")
+        logging.error(f"Last.fm Error: {e}")
         return None
 
-# ---------- دستورات بات ----------
+# ---------- Bot Commands ----------
 async def start(update: Update, context):
     await update.message.reply_text(
-        "🎵 سلام! من بات پیداکننده آهنگم.\n"
-        "اسم آهنگ و خواننده رو بفرست تا متن و ژانر رو برات پیدا کنم.\n"
-        "مثال: `Imagine Dragons Believer`"
+        "🎵 Hello! I'm a music finder bot.\n"
+        "Send me a song name (with artist if possible) and I'll find the lyrics and genres.\n\n"
+        "Examples:\n"
+        "`Imagine Dragons - Believer`\n"
+        "`Bohemian Rhapsody` (will search without artist)"
     )
 
 async def search_song(update: Update, context):
     user_input = update.message.text
-    await update.message.reply_text("🔍 در حال جستجو...")
+    await update.message.reply_text("🔍 Searching...")
 
-    # تشخیص خواننده و آهنگ (با خط تیره جدا کن)
+    # Detect artist and song (separated by ' - ')
     if ' - ' in user_input:
         parts = user_input.split(' - ', 1)
         artist = parts[0].strip()
@@ -66,41 +79,46 @@ async def search_song(update: Update, context):
         artist = None
         song = user_input.strip()
 
-    # دریافت متن
+    # Get lyrics
     lyrics = get_lyrics(song, artist)
     if not lyrics and artist:
-        lyrics = get_lyrics(song)  # تلاش مجدد بدون خواننده
+        lyrics = get_lyrics(song)  # Retry without artist
 
-    # دریافت ژانر
-    genre = "نام خواننده مشخص نیست"
+    # Get genres from Last.fm
+    genre_text = "No artist specified"
     if artist:
-        g = get_genre(song, artist)
-        if g:
-            genre = g
+        genres = get_genres(song, artist)
+        if genres:
+            genre_text = ", ".join(genres)  # e.g. "Rock, Pop, Electronic"
         else:
-            genre = "پیدا نشد"
+            genre_text = "Not found"
 
-    # ساخت پاسخ نهایی
+    # Build final response
     if lyrics:
         if len(lyrics) > 4000:
-            lyrics = lyrics[:4000] + "\n\n... (ادامه)"
+            lyrics = lyrics[:4000] + "\n\n... (continued)"
+        
         response = f"🎤 **{song}**\n"
         if artist:
             response += f"👤 {artist}\n"
-        response += f"🏷️ ژانر: {genre}\n\n"
-        response += f"📜 **متن:**\n{lyrics}"
+        response += f"🏷️ Genres: {genre_text}\n\n"
+        response += f"📜 **Lyrics:**\n{lyrics}"
     else:
-        response = f"😞 آهنگ `{song}` پیدا نشد. اسم رو دقیق‌تر بفرست."
+        response = f"😞 Song `{song}` not found. Please try with a more specific name or include the artist."
 
     await update.message.reply_text(response)
 
 async def help_command(update: Update, context):
-    await update.message.reply_text("اسم آهنگ رو با فرمت `خواننده - آهنگ` بفرست.")
+    await update.message.reply_text(
+        "Send me a song name in this format:\n"
+        "`Artist - Song Name`\n\n"
+        "Or just send the song name alone."
+    )
 
-# ---------- اجرای اصلی ----------
+# ---------- Main Execution ----------
 def main():
-    if not BOT_TOKEN or not GENIUS_TOKEN:
-        print("❌ خطا: BOT_TOKEN و GENIUS_TOKEN را در فایل .env تنظیم کن!")
+    if not BOT_TOKEN or not GENIUS_TOKEN or not LASTFM_API_KEY:
+        print("❌ ERROR: Set BOT_TOKEN, GENIUS_TOKEN, and LASTFM_API_KEY in .env file!")
         return
 
     app = Application.builder().token(BOT_TOKEN).build()
@@ -108,7 +126,7 @@ def main():
     app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_song))
 
-    print("🤖 بات روشن شد...")
+    print("🤖 Bot is running...")
     app.run_polling()
 
 if __name__ == "__main__":
