@@ -42,22 +42,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Unknown command. Use the menu.", reply_markup=MAIN_KEYBOARD)
 async def register_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.forward_from_chat:
-        await update.message.reply_text("Please forward a message from your channel.")
+    message = update.message
+    if not message:
         return
-    chat = update.message.forward_from_chat
+    if not message.forward_origin:
+        await message.reply_text("Please forward a message from your channel.")
+        return
+    chat = None
+    if hasattr(message.forward_origin, 'chat'):
+        chat = message.forward_origin.chat
+    elif hasattr(message, 'forward_from_chat'):
+        chat = message.forward_from_chat
+    if not chat or chat.type not in ['channel', 'supergroup']:
+        await message.reply_text("Only channels and supergroups are supported.")
+        return
     user_id = update.effective_user.id
-    if chat.type not in ['channel', 'supergroup']:
-        await update.message.reply_text("Only channels and supergroups are supported.")
-        return
     try:
         data = {"chat_id": str(chat.id),"title": chat.title or "Unknown Channel","owner_id": user_id,"member_count": getattr(chat, 'member_count', 0),"updated_at": datetime.now(timezone.utc).isoformat()}
         supabase.table("channels").upsert(data).execute()
-        await update.message.reply_text(f"✅ Channel «{chat.title}» registered successfully!", reply_markup=MAIN_KEYBOARD)
+        await message.reply_text(f"✅ Channel «{chat.title}» registered successfully!", reply_markup=MAIN_KEYBOARD)
         logger.info(f"Channel registered: {chat.title} ({chat.id}) by user {user_id}")
     except Exception as e:
         logger.error(f"Error registering channel: {e}")
-        await update.message.reply_text("❌ Error registering channel. Try again.")
+        await message.reply_text("❌ Error registering channel. Try again.")
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.channel_post:
         return
