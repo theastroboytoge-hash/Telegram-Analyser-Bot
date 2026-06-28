@@ -565,4 +565,8 @@ def main():
     application.add_handler(MessageHandler(filters.AUDIO | filters.Document.ALL, handle_audio))
     application.add_handler(CallbackQueryHandler(button_callback))
 
-    logger.info("🤖 Bot started successfully
+    logger.info("🤖 Bot started successfully...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
+
+if __name__ == "__main__":
+    main()
