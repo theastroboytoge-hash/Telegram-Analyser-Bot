@@ -1,11 +1,11 @@
 import os
 import asyncio
 import logging
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from aiohttp import web
 from supabase import create_client
 from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, ChatMemberHandler, ContextTypes, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -17,70 +17,105 @@ supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 MAIN_KEYBOARD = ReplyKeyboardMarkup([["📊 Top Posts"],["👁 Best Engagement"],["🔗 Forward Sources"],["⚙️ Settings"]], resize_keyboard=True)
 BACK_KEYBOARD = ReplyKeyboardMarkup([["🔙 Back"]], resize_keyboard=True)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Welcome! Forward a message from your channel to register.", reply_markup=MAIN_KEYBOARD)
+    await update.message.reply_text("👋 Welcome!\n\nForward a message from your channel to register.", reply_markup=MAIN_KEYBOARD)
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
-    logger.info(f"TEXT RECEIVED: {text}")
     user_id = update.effective_user.id
+    logger.info(f"TEXT RECEIVED from {user_id}: {text}")
     if text == "🔙 Back":
         await update.message.reply_text("Main Menu", reply_markup=MAIN_KEYBOARD)
         return
     res = supabase.table("channels").select("*").eq("owner_id", user_id).execute()
     if not res.data:
-        await update.message.reply_text("No channel found. Forward a channel message.", reply_markup=MAIN_KEYBOARD)
+        await update.message.reply_text("❌ First forward a message from your channel.", reply_markup=MAIN_KEYBOARD)
         return
     channel = res.data[0]
+    chat_id = channel["chat_id"]
     if text == "📊 Top Posts":
-        await show_top_posts(update, channel["chat_id"])
+        await show_top_posts(update, chat_id)
     elif text == "👁 Best Engagement":
-        await show_best_engagement(update, channel["chat_id"])
+        await show_best_engagement(update, chat_id)
     elif text == "🔗 Forward Sources":
-        await show_forward_sources(update, channel["chat_id"])
+        await show_forward_sources(update, chat_id)
+    elif text == "⚙️ Settings":
+        await update.message.reply_text("⚙️ Settings under development...", reply_markup=BACK_KEYBOARD)
+    else:
+        await update.message.reply_text("Unknown command. Use the menu.", reply_markup=MAIN_KEYBOARD)
 async def register_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("FORWARDED MESSAGE RECEIVED")
-    if getattr(update.message, 'forward_from_chat', None):
-        chat = update.message.forward_from_chat
-        user_id = update.effective_user.id
-        supabase.table("channels").upsert({"chat_id": str(chat.id),"title": chat.title,"owner_id": user_id,"member_count": 0}).execute()
-        await update.message.reply_text(f"✅ Channel '{chat.title}' registered!", reply_markup=MAIN_KEYBOARD)
-async def show_top_posts(update: Update, chat_id):
-    res = supabase.table("post_analytics").select("*").eq("chat_id", chat_id).limit(8).execute()
-    if not res.data:
-        await update.message.reply_text("No data yet.", reply_markup=BACK_KEYBOARD)
+    if not update.message.forward_from_chat:
+        await update.message.reply_text("Please forward a message from your channel.")
         return
-    text = "🏆 Top Posts:\n\n"
-    for post in sorted(res.data, key=lambda x: x.get("views", 0), reverse=True):
-        text += f"• Post {post['message_id']}: {post.get('views',0)} views\n"
-    await update.message.reply_text(text, reply_markup=BACK_KEYBOARD)
-async def show_best_engagement(update: Update, chat_id):
-    res = supabase.table("post_analytics").select("message_id,views,members_at_time").eq("chat_id", chat_id).limit(8).execute()
-    if not res.data:
-        await update.message.reply_text("No data yet.", reply_markup=BACK_KEYBOARD)
+    chat = update.message.forward_from_chat
+    user_id = update.effective_user.id
+    if chat.type not in ['channel', 'supergroup']:
+        await update.message.reply_text("Only channels and supergroups are supported.")
         return
-    text = "👁 Best Engagement:\n\n"
-    for post in sorted(res.data, key=lambda x: x.get("views",0), reverse=True):
-        rate = (post.get("views",0) / max(post.get("members_at_time",1),1)) * 100
-        text += f"• Post {post['message_id']}: {rate:.1f}%\n"
-    await update.message.reply_text(text, reply_markup=BACK_KEYBOARD)
-async def show_forward_sources(update: Update, chat_id):
-    res = supabase.table("referrals").select("from_chat_title").eq("channel_id", chat_id).limit(10).execute()
-    if not res.data:
-        await update.message.reply_text("No forwards yet.", reply_markup=BACK_KEYBOARD)
-        return
-    counts = {}
-    for r in res.data:
-        counts[r["from_chat_title"]] = counts.get(r["from_chat_title"], 0) + 1
-    text = "🔗 Forward Sources:\n\n"
-    for title, count in sorted(counts.items(), key=lambda x: x[1], reverse=True):
-        text += f"• {title}: {count} times\n"
-    await update.message.reply_text(text, reply_markup=BACK_KEYBOARD)
+    try:
+        data = {"chat_id": str(chat.id),"title": chat.title or "Unknown Channel","owner_id": user_id,"member_count": getattr(chat, 'member_count', 0),"updated_at": datetime.now(timezone.utc).isoformat()}
+        supabase.table("channels").upsert(data).execute()
+        await update.message.reply_text(f"✅ Channel «{chat.title}» registered successfully!", reply_markup=MAIN_KEYBOARD)
+        logger.info(f"Channel registered: {chat.title} ({chat.id}) by user {user_id}")
+    except Exception as e:
+        logger.error(f"Error registering channel: {e}")
+        await update.message.reply_text("❌ Error registering channel. Try again.")
 async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.channel_post:
-        logger.info("CHANNEL POST RECEIVED")
+    if not update.channel_post:
+        return
+    post = update.channel_post
+    chat_id = str(post.chat.id)
+    try:
+        supabase.table("post_analytics").upsert({"chat_id": chat_id,"message_id": post.message_id,"views": 0,"members_at_time": 0,"created_at": datetime.now(timezone.utc).isoformat()}).execute()
+        logger.info(f"New post saved → Channel: {chat_id} | Message: {post.message_id}")
+    except Exception as e:
+        logger.error(f"Error saving post analytics: {e}")
+async def show_top_posts(update: Update, chat_id: str):
+    try:
+        res = supabase.table("post_analytics").select("*").eq("chat_id", chat_id).limit(10).execute()
+        if not res.data:
+            await update.message.reply_text("📭 No data yet.", reply_markup=BACK_KEYBOARD)
+            return
+        text = "🏆 **Top Posts**\n\n"
+        for post in sorted(res.data, key=lambda x: x.get("views", 0), reverse=True):
+            text += f"• Post {post['message_id']}: **{post.get('views', 0):,}** views\n"
+        await update.message.reply_text(text, reply_markup=BACK_KEYBOARD, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error in show_top_posts: {e}")
+        await update.message.reply_text("❌ Error fetching stats.", reply_markup=BACK_KEYBOARD)
+async def show_best_engagement(update: Update, chat_id: str):
+    try:
+        res = supabase.table("post_analytics").select("message_id,views,members_at_time").eq("chat_id", chat_id).limit(10).execute()
+        if not res.data:
+            await update.message.reply_text("📭 No data yet.", reply_markup=BACK_KEYBOARD)
+            return
+        text = "👁 **Best Engagement**\n\n"
+        for post in sorted(res.data, key=lambda x: x.get("views", 0), reverse=True):
+            members = max(post.get("members_at_time", 1), 1)
+            rate = (post.get("views", 0) / members) * 100
+            text += f"• Post {post['message_id']}: **{rate:.1f}%** engagement\n"
+        await update.message.reply_text(text, reply_markup=BACK_KEYBOARD, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error in show_best_engagement: {e}")
+        await update.message.reply_text("❌ Error fetching stats.", reply_markup=BACK_KEYBOARD)
+async def show_forward_sources(update: Update, chat_id: str):
+    try:
+        res = supabase.table("referrals").select("from_chat_title").eq("channel_id", chat_id).limit(15).execute()
+        if not res.data:
+            await update.message.reply_text("🔗 No forwards recorded yet.", reply_markup=BACK_KEYBOARD)
+            return
+        counts = {}
+        for r in res.data:
+            title = r["from_chat_title"] or "Unknown"
+            counts[title] = counts.get(title, 0) + 1
+        text = "🔗 **Forward Sources**\n\n"
+        for title, count in sorted(counts.items(), key=lambda x: x[1], reverse=True):
+            text += f"• {title}: **{count}** times\n"
+        await update.message.reply_text(text, reply_markup=BACK_KEYBOARD, parse_mode='Markdown')
+    except Exception as e:
+        logger.error(f"Error in show_forward_sources: {e}")
+        await update.message.reply_text("❌ Error fetching stats.", reply_markup=BACK_KEYBOARD)
 async def webhook_handler(request, application: Application):
     try:
         data = await request.json()
-        logger.info("WEBHOOK RECEIVED UPDATE")
         update = Update.de_json(data, application.bot)
         await application.process_update(update)
     except Exception as e:
@@ -107,9 +142,10 @@ async def main():
     webhook_url = f"{RENDER_URL}/webhook"
     try:
         await application.bot.set_webhook(url=webhook_url)
-        logger.info(f"WEBHOOK SET SUCCESSFULLY: {webhook_url}")
+        logger.info(f"✅ Webhook set: {webhook_url}")
     except Exception as e:
-        logger.error(f"Webhook set failed: {e}")
+        logger.error(f"❌ Webhook failed: {e}")
+    logger.info("🚀 Bot is running...")
     await asyncio.Event().wait()
 if __name__ == "__main__":
     asyncio.run(main())
