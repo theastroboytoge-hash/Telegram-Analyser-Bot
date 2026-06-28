@@ -1,153 +1,269 @@
-import os
-import asyncio
 import logging
-from datetime import datetime, timezone
-from aiohttp import web
-from supabase import create_client
-from telegram import Update, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+import sqlite3
+from datetime import datetime, timedelta
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes
+TOKEN = "YOUR_BOT_TOKEN"
+REQUIRED_CHANNEL = "@dilemmapl"
+DB_PATH = "bot_data.db"
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-RENDER_URL = os.getenv("RENDER_URL")
-PORT = int(os.getenv("PORT", 8000))
-supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
-MAIN_KEYBOARD = ReplyKeyboardMarkup([["📊 Top Posts"],["👁 Best Engagement"],["🔗 Forward Sources"],["⚙️ Settings"]], resize_keyboard=True)
-BACK_KEYBOARD = ReplyKeyboardMarkup([["🔙 Back"]], resize_keyboard=True)
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""CREATE TABLE IF NOT EXISTS users (
+        user_id INTEGER PRIMARY KEY,
+        username TEXT,
+        joined_date TIMESTAMP
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS channels (
+        channel_id INTEGER PRIMARY KEY,
+        username TEXT,
+        title TEXT,
+        user_id INTEGER,
+        added_date TIMESTAMP
+    )""")
+    c.execute("""CREATE TABLE IF NOT EXISTS messages (
+        message_id INTEGER,
+        channel_id INTEGER,
+        date TIMESTAMP,
+        text TEXT,
+        views INTEGER,
+        forwards INTEGER,
+        PRIMARY KEY (message_id, channel_id)
+    )""")
+    conn.commit()
+    conn.close()
+init_db()
+def get_db():
+    return sqlite3.connect(DB_PATH)
+async def check_membership(context, user_id):
+    try:
+        chat_member = await context.bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=user_id)
+        return chat_member.status in ["member", "administrator", "creator"]
+    except:
+        return False
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Welcome!\n\nForward a message from your channel to register.", reply_markup=MAIN_KEYBOARD)
-async def handle_all_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip() if update.message and update.message.text else "NO_TEXT"
-    user_id = update.effective_user.id if update.effective_user else "UNKNOWN"
-    logger.info(f"TEXT RECEIVED from {user_id}: '{text}'")
-    if text == "🔙 Back":
-        await update.message.reply_text("Main Menu", reply_markup=MAIN_KEYBOARD)
+    user = update.effective_user
+    if not await check_membership(context, user.id):
+        keyboard = [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{REQUIRED_CHANNEL[1:]}")]]
+        await update.message.reply_text(
+            f"To use the bot, please join {REQUIRED_CHANNEL} first.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
-    res = supabase.table("channels").select("*").eq("owner_id", user_id).execute()
-    if not res.data:
-        await update.message.reply_text("❌ First forward a message from your channel.", reply_markup=MAIN_KEYBOARD)
-        return
-    channel = res.data[0]
-    chat_id = channel["chat_id"]
-    if text == "📊 Top Posts":
-        await show_top_posts(update, chat_id)
-    elif text == "👁 Best Engagement":
-        await show_best_engagement(update, chat_id)
-    elif text == "🔗 Forward Sources":
-        await show_forward_sources(update, chat_id)
-    elif text == "⚙️ Settings":
-        await update.message.reply_text("⚙️ Settings under development...", reply_markup=BACK_KEYBOARD)
-    else:
-        await update.message.reply_text("Unknown command. Use the menu below.", reply_markup=MAIN_KEYBOARD)
-async def register_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.message
-    if not message:
-        return
-    if not message.forward_origin and not getattr(message, 'forward_from_chat', None):
-        await message.reply_text("Please forward a message from your channel.")
-        return
-    chat = getattr(message.forward_origin, 'chat', None) or getattr(message, 'forward_from_chat', None)
-    if not chat or chat.type not in ['channel', 'supergroup']:
-        await message.reply_text("Only channels and supergroups are supported.")
-        return
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT OR IGNORE INTO users (user_id, username, joined_date) VALUES (?, ?, ?)",
+              (user.id, user.username, datetime.now()))
+    conn.commit()
+    conn.close()
+    keyboard = ReplyKeyboardMarkup([[KeyboardButton("My Channels")]], resize_keyboard=True)
+    await update.message.reply_text("Welcome! Use the button below to manage your channels.", reply_markup=keyboard)
+async def handle_my_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    try:
-        data = {"chat_id": str(chat.id),"title": chat.title or "Unknown Channel","owner_id": user_id,"member_count": getattr(chat, 'member_count', 0)}
-        supabase.table("channels").upsert(data).execute()
-        await message.reply_text(f"✅ Channel «{chat.title}» registered successfully!", reply_markup=MAIN_KEYBOARD)
-        logger.info(f"Channel registered: {chat.title} ({chat.id}) by user {user_id}")
-    except Exception as e:
-        logger.error(f"Error registering channel: {e}")
-        await message.reply_text("❌ Error registering channel. Try again.")
-async def channel_post_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.channel_post:
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT channel_id, username, title FROM channels WHERE user_id=?", (user_id,))
+    channels = c.fetchall()
+    conn.close()
+    if not channels:
+        await update.message.reply_text("No channels added. Use /addchannel to add a channel.")
         return
-    post = update.channel_post
-    chat_id = str(post.chat.id)
-    try:
-        supabase.table("post_analytics").upsert({"chat_id": chat_id,"message_id": post.message_id,"views": 0,"members_at_time": 0,"created_at": datetime.now(timezone.utc).isoformat()}).execute()
-        logger.info(f"New post saved → Channel: {chat_id} | Message: {post.message_id}")
-    except Exception as e:
-        logger.error(f"Error saving post analytics: {e}")
-async def show_top_posts(update: Update, chat_id: str):
-    try:
-        res = supabase.table("post_analytics").select("*").eq("chat_id", chat_id).limit(10).execute()
-        if not res.data:
-            await update.message.reply_text("📭 No data yet.", reply_markup=BACK_KEYBOARD)
-            return
-        text = "🏆 **Top Posts**\n\n"
-        for post in sorted(res.data, key=lambda x: x.get("views", 0), reverse=True):
-            text += f"• Post {post['message_id']}: **{post.get('views', 0):,}** views\n"
-        await update.message.reply_text(text, reply_markup=BACK_KEYBOARD, parse_mode='Markdown')
-    except Exception as e:
-        logger.error(f"Error in show_top_posts: {e}")
-        await update.message.reply_text("❌ Error fetching stats.", reply_markup=BACK_KEYBOARD)
-async def show_best_engagement(update: Update, chat_id: str):
-    try:
-        res = supabase.table("post_analytics").select("message_id,views,members_at_time").eq("chat_id", chat_id).limit(10).execute()
-        if not res.data:
-            await update.message.reply_text("📭 No data yet.", reply_markup=BACK_KEYBOARD)
-            return
-        text = "👁 **Best Engagement**\n\n"
-        for post in sorted(res.data, key=lambda x: x.get("views", 0), reverse=True):
-            members = max(post.get("members_at_time", 1), 1)
-            rate = (post.get("views", 0) / members) * 100
-            text += f"• Post {post['message_id']}: **{rate:.1f}%** engagement\n"
-        await update.message.reply_text(text, reply_markup=BACK_KEYBOARD, parse_mode='Markdown')
-    except Exception as e:
-        logger.error(f"Error in show_best_engagement: {e}")
-        await update.message.reply_text("❌ Error fetching stats.", reply_markup=BACK_KEYBOARD)
-async def show_forward_sources(update: Update, chat_id: str):
-    try:
-        res = supabase.table("referrals").select("from_chat_title").eq("channel_id", chat_id).limit(15).execute()
-        if not res.data:
-            await update.message.reply_text("🔗 No forwards recorded yet.", reply_markup=BACK_KEYBOARD)
-            return
-        counts = {}
-        for r in res.data:
-            title = r["from_chat_title"] or "Unknown"
-            counts[title] = counts.get(title, 0) + 1
-        text = "🔗 **Forward Sources**\n\n"
-        for title, count in sorted(counts.items(), key=lambda x: x[1], reverse=True):
-            text += f"• {title}: **{count}** times\n"
-        await update.message.reply_text(text, reply_markup=BACK_KEYBOARD, parse_mode='Markdown')
-    except Exception as e:
-        logger.error(f"Error in show_forward_sources: {e}")
-        await update.message.reply_text("❌ Error fetching stats.", reply_markup=BACK_KEYBOARD)
-async def webhook_handler(request, application: Application):
-    try:
-        data = await request.json()
-        update = Update.de_json(data, application.bot)
-        await application.process_update(update)
-    except Exception as e:
-        logger.error(f"Webhook error: {e}")
-    return web.Response(text="OK")
-async def health_check(request):
-    return web.Response(text="OK")
-async def main():
-    application = Application.builder().token(BOT_TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.FORWARDED, register_channel))
-    application.add_handler(MessageHandler(filters.TEXT, handle_all_text))
-    application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, channel_post_handler))
-    app = web.Application()
-    app.router.add_get("/healthz", health_check)
-    app.router.add_post("/webhook", lambda r: webhook_handler(r, application))
-    await application.initialize()
-    await application.start()
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", PORT)
-    await site.start()
-    webhook_url = f"{RENDER_URL}/webhook"
-    try:
-        await application.bot.set_webhook(url=webhook_url)
-        logger.info(f"✅ Webhook set: {webhook_url}")
-    except Exception as e:
-        logger.error(f"❌ Webhook failed: {e}")
-    logger.info("🚀 Bot is running...")
-    await asyncio.Event().wait()
+    keyboard = []
+    for ch in channels:
+        display = ch[2] if ch[2] else ch[1] if ch[1] else str(ch[0])
+        keyboard.append([InlineKeyboardButton(display, callback_data=f"channel_{ch[0]}")])
+    await update.message.reply_text("Select your channels:", reply_markup=InlineKeyboardMarkup(keyboard))
+async def channel_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    channel_id = int(query.data.split("_")[1])
+    context.user_data["selected_channel"] = channel_id
+    keyboard = [
+        [InlineKeyboardButton("Top Posts", callback_data="analytics_top_posts")],
+        [InlineKeyboardButton("Most Forwarded", callback_data="analytics_most_commented")],
+        [InlineKeyboardButton("Recent Activity", callback_data="analytics_recent")],
+        [InlineKeyboardButton("Back", callback_data="back_channels")]
+    ]
+    await query.edit_message_text("Select analysis type:", reply_markup=InlineKeyboardMarkup(keyboard))
+async def analytics_top_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    channel_id = context.user_data.get("selected_channel")
+    if not channel_id:
+        await query.edit_message_text("Please select a channel first.")
+        return
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT message_id, text, views, forwards FROM messages WHERE channel_id=? ORDER BY views DESC LIMIT 10", (channel_id,))
+    msgs = c.fetchall()
+    conn.close()
+    if not msgs:
+        await query.edit_message_text("No messages received for this channel yet.")
+        return
+    text = "🔝 Top Posts:\n\n"
+    for idx, (msg_id, msg_text, views, forwards) in enumerate(msgs, 1):
+        preview = msg_text[:50] + "..." if msg_text and len(msg_text) > 50 else msg_text or "No text"
+        text += f"{idx}. {preview}\n👁 {views} Views | 🔄 {forwards} Forwards\n\n"
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back_analytics")]]))
+async def analytics_most_commented(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    channel_id = context.user_data.get("selected_channel")
+    if not channel_id:
+        await query.edit_message_text("Please select a channel first.")
+        return
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT message_id, text, views, forwards FROM messages WHERE channel_id=? ORDER BY forwards DESC LIMIT 10", (channel_id,))
+    msgs = c.fetchall()
+    conn.close()
+    if not msgs:
+        await query.edit_message_text("No messages received for this channel yet.")
+        return
+    text = "💬 Most Forwarded Posts:\n\n"
+    for idx, (msg_id, msg_text, views, forwards) in enumerate(msgs, 1):
+        preview = msg_text[:50] + "..." if msg_text and len(msg_text) > 50 else msg_text or "No text"
+        text += f"{idx}. {preview}\n👁 {views} Views | 🔄 {forwards} Forwards\n\n"
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back_analytics")]]))
+async def analytics_recent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    channel_id = context.user_data.get("selected_channel")
+    if not channel_id:
+        await query.edit_message_text("Please select a channel first.")
+        return
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT message_id, text, date, views, forwards FROM messages WHERE channel_id=? ORDER BY date DESC LIMIT 5", (channel_id,))
+    msgs = c.fetchall()
+    conn.close()
+    if not msgs:
+        await query.edit_message_text("No messages received for this channel yet.")
+        return
+    text = "🕒 Recent Activity:\n\n"
+    for idx, (msg_id, msg_text, date_str, views, forwards) in enumerate(msgs, 1):
+        preview = msg_text[:50] + "..." if msg_text and len(msg_text) > 50 else msg_text or "No text"
+        text += f"{idx}. {preview}\n📅 {date_str[:16]}\n👁 {views} Views | 🔄 {forwards} Forwards\n\n"
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back_analytics")]]))
+async def back_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    channel_id = context.user_data.get("selected_channel")
+    if channel_id:
+        keyboard = [
+            [InlineKeyboardButton("Top Posts", callback_data="analytics_top_posts")],
+            [InlineKeyboardButton("Most Forwarded", callback_data="analytics_most_commented")],
+            [InlineKeyboardButton("Recent Activity", callback_data="analytics_recent")],
+            [InlineKeyboardButton("Back", callback_data="back_channels")]
+        ]
+        await query.edit_message_text("Select analysis type:", reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        await query.edit_message_text("Please select a channel first.")
+async def back_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = update.effective_user.id
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT channel_id, username, title FROM channels WHERE user_id=?", (user_id,))
+    channels = c.fetchall()
+    conn.close()
+    if not channels:
+        await query.edit_message_text("No channels found.")
+        return
+    keyboard = []
+    for ch in channels:
+        display = ch[2] if ch[2] else ch[1] if ch[1] else str(ch[0])
+        keyboard.append([InlineKeyboardButton(display, callback_data=f"channel_{ch[0]}")])
+    await query.edit_message_text("Select your channels:", reply_markup=InlineKeyboardMarkup(keyboard))
+ADD_CHANNEL = 1
+async def add_channel_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if not await check_membership(context, user_id):
+        await update.message.reply_text("Please join the required channel first.")
+        return
+    await update.message.reply_text("Please enter the channel username (e.g. @username) or its numeric ID:")
+    return ADD_CHANNEL
+async def add_channel_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    input_text = update.message.text.strip()
+    if input_text.startswith("@"):
+        chat_username = input_text[1:]
+        try:
+            chat = await context.bot.get_chat(f"@{chat_username}")
+        except:
+            await update.message.reply_text("Channel not found. Please enter a valid username.")
+            return ADD_CHANNEL
+    else:
+        try:
+            chat_id = int(input_text)
+            chat = await context.bot.get_chat(chat_id)
+        except:
+            await update.message.reply_text("Invalid numeric ID.")
+            return ADD_CHANNEL
+    if chat.type not in ["channel", "supergroup"]:
+        await update.message.reply_text("Please enter a valid channel.")
+        return ADD_CHANNEL
+    bot_member = await context.bot.get_chat_member(chat.id, context.bot.id)
+    if bot_member.status not in ["administrator", "creator"]:
+        await update.message.reply_text("The bot must be an admin in the channel to receive messages. Please add the bot as admin and try again.")
+        return ADD_CHANNEL
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("INSERT OR REPLACE INTO channels (channel_id, username, title, user_id, added_date) VALUES (?, ?, ?, ?, ?)",
+              (chat.id, chat.username, chat.title, user_id, datetime.now()))
+    conn.commit()
+    conn.close()
+    await update.message.reply_text(f"Channel {chat.title or chat.username} added successfully.")
+    keyboard = ReplyKeyboardMarkup([[KeyboardButton("My Channels")]], resize_keyboard=True)
+    await update.message.reply_text("Use the button below to view your channels.", reply_markup=keyboard)
+    return ConversationHandler.END
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Operation cancelled.")
+    return ConversationHandler.END
+async def store_channel_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.channel_post:
+        msg = update.channel_post
+        channel_id = msg.chat_id
+        conn = get_db()
+        c = conn.cursor()
+        c.execute("SELECT user_id FROM channels WHERE channel_id=?", (channel_id,))
+        row = c.fetchone()
+        if row:
+            c.execute("INSERT OR IGNORE INTO messages (message_id, channel_id, date, text, views, forwards) VALUES (?, ?, ?, ?, ?, ?)",
+                      (msg.message_id, channel_id, msg.date, msg.text or msg.caption or "", msg.views or 0, msg.forward_count or 0))
+            conn.commit()
+        conn.close()
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
+        "Help:\n"
+        "/start - Start and check membership\n"
+        "/addchannel - Add a new channel\n"
+        "Button 'My Channels' - View channels and analytics\n"
+        "/help - This message"
+    )
+def main():
+    app = Application.builder().token(TOKEN).build()
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("addchannel", add_channel_start)],
+        states={
+            ADD_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_channel_receive)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(conv_handler)
+    app.add_handler(MessageHandler(filters.Regex("^My Channels$"), handle_my_channels))
+    app.add_handler(CallbackQueryHandler(channel_selection, pattern="^channel_"))
+    app.add_handler(CallbackQueryHandler(analytics_top_posts, pattern="^analytics_top_posts$"))
+    app.add_handler(CallbackQueryHandler(analytics_most_commented, pattern="^analytics_most_commented$"))
+    app.add_handler(CallbackQueryHandler(analytics_recent, pattern="^analytics_recent$"))
+    app.add_handler(CallbackQueryHandler(back_analytics, pattern="^back_analytics$"))
+    app.add_handler(CallbackQueryHandler(back_channels, pattern="^back_channels$"))
+    app.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, store_channel_message))
+    app.run_polling()
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
