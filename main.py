@@ -1,9 +1,12 @@
+import os
 import logging
 import sqlite3
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes
-TOKEN = "your_actual_bot_token_here"
+TOKEN = os.getenv("BOT_TOKEN")
+if not TOKEN:
+    raise ValueError("BOT_TOKEN environment variable not set! Please set it before running the bot.")
 REQUIRED_CHANNEL = "@dilemmapl"
 DB_PATH = "bot_data.db"
 logging.basicConfig(level=logging.INFO)
