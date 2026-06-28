@@ -8,8 +8,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from dotenv import load_dotenv
 
-# ========== وابستگی‌های اختیاری ==========
-# BeautifulSoup (برای scraping Genius)
+# ========== Optional Dependencies ==========
+# BeautifulSoup (for Genius scraping)
 try:
     from bs4 import BeautifulSoup
     BEAUTIFULSOUP_AVAILABLE = True
@@ -29,30 +29,30 @@ except ImportError:
 
 load_dotenv()
 
-# ---------- توکن‌ها ----------
+# ---------- Tokens ----------
 BOT_TOKEN = os.getenv('BOT_TOKEN')
 LASTFM_API_KEY = os.getenv('LASTFM_API_KEY')
 MUSIXMATCH_API_KEY = os.getenv('MUSIXMATCH_API_KEY')
-GENIUS_TOKEN = os.getenv('GENIUS_TOKEN')  # اختیاری
+GENIUS_TOKEN = os.getenv('GENIUS_TOKEN')  # Optional
 
-# ---------- لاگینگ ----------
+# ---------- Logging ----------
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 logger = logging.getLogger(__name__)
 
-# ---------- Session HTTP ----------
+# ---------- HTTP Session ----------
 _session = requests.Session()
 _session.headers.update({'User-Agent': 'MusicBot/1.0 (Telegram Bot)'})
 
-# ---------- توابع کمکی ----------
+# ---------- Helper Functions ----------
 def remove_timestamps(text):
     pattern = r'\[\d{2}:\d{2}(?:\.\d{2})?\]\s*'
     return re.sub(pattern, '', text)
 
 def extract_metadata(file_path):
-    """استخراج نام خواننده و عنوان آهنگ از فایل صوتی"""
+    """Extract artist and title from audio file."""
     try:
         audio = MutagenFile(file_path)
         if audio is None:
@@ -86,7 +86,7 @@ def extract_metadata(file_path):
         logger.error(f"Metadata extraction error: {e}")
         return None, None
 
-# ---------- جستجو در Last.fm ----------
+# ---------- Search on Last.fm ----------
 def search_tracks_sync(query, limit=10):
     if not LASTFM_API_KEY:
         return None
@@ -128,7 +128,7 @@ def search_tracks_sync(query, limit=10):
         logger.error(f"Last.fm search error: {e}")
         return None
 
-# ---------- دریافت متن از منابع مختلف ----------
+# ---------- Get lyrics from multiple sources ----------
 def get_lyrics_from_lyricsovh(song_name, artist_name):
     try:
         url = f"https://api.lyrics.ovh/v1/{artist_name.strip()}/{song_name.strip()}"
@@ -215,7 +215,7 @@ def get_lyrics_from_musixmatch(song_name, artist_name):
         return None
 
 def get_lyrics_from_genius(song_name, artist_name):
-    """دریافت متن از Genius (در صورت موجود بودن BeautifulSoup و توکن)"""
+    """Get lyrics from Genius (if BeautifulSoup and token are available)."""
     if not BEAUTIFULSOUP_AVAILABLE:
         logger.info("BeautifulSoup not available, skipping Genius.")
         return None
@@ -225,9 +225,11 @@ def get_lyrics_from_genius(song_name, artist_name):
         return None
 
     try:
-        # جستجو در Genius
         search_url = "https://api.genius.com/search"
-        headers = {"Authorization": f"Bearer {GENIUS_TOKEN}"}
+        headers = {
+            "Authorization": f"Bearer {GENIUS_TOKEN}",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        }
         params = {"q": f"{artist_name} {song_name}"}
         response = _session.get(search_url, headers=headers, params=params, timeout=10)
         if not response.ok:
@@ -283,7 +285,7 @@ def get_lyrics_sync(song_name, artist_name):
     logger.info(f"❌ No lyrics found for {song_name} by {artist_name} from any source")
     return None
 
-# ---------- دریافت ژانر از Last.fm ----------
+# ---------- Get genres from Last.fm ----------
 def get_genres_sync(song_name, artist_name):
     if not LASTFM_API_KEY:
         return None
@@ -329,7 +331,7 @@ def get_genres_sync(song_name, artist_name):
         logger.error(f"Last.fm Error: {e}")
         return None
 
-# ---------- توابع ناهمگام (Async) ----------
+# ---------- Async Wrappers ----------
 async def search_tracks(query, limit=10):
     return await asyncio.to_thread(search_tracks_sync, query, limit)
 
@@ -341,55 +343,64 @@ async def get_genres(song_name, artist_name):
         return None
     return await asyncio.to_thread(get_genres_sync, song_name, artist_name)
 
-# ---------- دستورات ربات ----------
+# ---------- Bot Commands ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎵 سلام! من یک ربات پیداکننده موسیقی هستم.\n\n"
-        "هر جستجویی (نام آهنگ، خواننده یا حتی قسمتی از متن) بفرستید:\n"
-        "مثال: `Believer` یا `Imagine Dragons` یا `First things first`\n\n"
-        "همچنین می‌توانید یک فایل صوتی (MP3 و غیره) ارسال کنید تا متادیتا استخراج شود."
+        "🎵 Hello! I'm a music finder bot.\n\n"
+        "Send me any search query (song name, artist, or even part of lyrics):\n"
+        "Example: `Believer` or `Imagine Dragons` or `First things first`\n\n"
+        "You can also send an audio file (MP3, etc.) and I'll search using its metadata."
     )
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
     audio = update.message.audio or update.message.document
     if not audio:
-        await update.message.reply_text("❌ فایل صوتی پیدا نشد.")
+        await update.message.reply_text("❌ No audio file found.")
         return
 
     file = await audio.get_file()
-    file_path = f"temp_{audio.file_id}.mp3"
+    file_extension = os.path.splitext(audio.file_name or '')[1] or '.mp3'
+    file_path = f"temp_{audio.file_id}{file_extension}"
     await file.download_to_drive(file_path)
 
     try:
         artist, title = extract_metadata(file_path)
         if artist and title:
             query = f"{artist} - {title}"
-            await update.message.reply_text(f"🎵 متادیتا: {artist} - {title}\nدر حال جستجو...")
+            await update.message.reply_text(f"🎵 Metadata: {artist} - {title}\nSearching...")
             await search_and_show_results(update, context, query)
         else:
-            await update.message.reply_text("❌ امکان استخراج نام خواننده و عنوان وجود ندارد. لطفاً به‌صورت دستی جستجو کنید.")
+            await update.message.reply_text("❌ Could not extract artist and title. Please try searching manually.")
     finally:
         if os.path.exists(file_path):
             os.remove(file_path)
 
 async def search_and_show_results(update, context, query):
-    """نمایش نتایج جستجو به‌صورت دکمه‌ای"""
-    await update.message.reply_text("🔍 در حال جستجو...")
+    """Search and display results as inline buttons."""
+    await update.message.reply_text("🔍 Searching...")
 
     if not query or not query.strip():
-        await update.message.reply_text("❌ لطفاً یک عبارت معتبر ارسال کنید.")
+        await update.message.reply_text("❌ Please send a valid search query.")
         return
 
     try:
         tracks = await asyncio.wait_for(search_tracks(query.strip()), timeout=15.0)
+    except asyncio.CancelledError:
+        logger.info("Search task was cancelled")
+        await update.message.reply_text("⏹️ Search was cancelled.")
+        return
+    except asyncio.TimeoutError:
+        logger.warning("Search request timed out")
+        await update.message.reply_text("⏰ Timeout: Search took too long.")
+        return
     except Exception as e:
         logger.error(f"Search error: {e}")
-        await update.message.reply_text("❌ خطا در جستجو.")
+        await update.message.reply_text("❌ Error occurred while searching.")
         return
 
     if not tracks:
         await update.message.reply_text(
-            f"😞 نتیجه‌ای برای '{query}' پیدا نشد. لطفاً عبارت دیگری امتحان کنید."
+            f"😞 No results found for '{query}'. Please try a different search."
         )
         return
 
@@ -403,12 +414,12 @@ async def search_and_show_results(update, context, query):
             display_name = display_name[:57] + "..."
         buttons.append([InlineKeyboardButton(display_name, callback_data=f"track_{idx}")])
 
-    buttons.append([InlineKeyboardButton("❌ لغو", callback_data="cancel")])
+    buttons.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
     reply_markup = InlineKeyboardMarkup(buttons)
 
     await update.message.reply_text(
-        f"🎵 {len(tracks)} نتیجه برای '{query}':\n"
-        "برای دریافت متن و ژانر روی آهنگ مورد نظر کلیک کنید:",
+        f"🎵 Found {len(tracks)} results for '{query}':\n"
+        "Click on a song to get lyrics and genres:",
         reply_markup=reply_markup
     )
 
@@ -416,7 +427,7 @@ async def search_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.message.text
     await search_and_show_results(update, context, query)
 
-# ---------- مدیریت کلیک روی دکمه‌ها ----------
+# ---------- Callback Query Handler ----------
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -425,7 +436,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = context.user_data
 
     if data == "cancel":
-        await query.edit_message_text("❌ جستجو لغو شد.")
+        await query.edit_message_text("❌ Search cancelled.")
         return
 
     if data.startswith("track_"):
@@ -434,103 +445,117 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             tracks = user_data.get('search_results', [])
             
             if idx >= len(tracks):
-                await query.edit_message_text("❌ نتیجه پیدا نشد. لطفاً دوباره جستجو کنید.")
+                await query.edit_message_text("❌ Result not found. Please search again.")
                 return
 
             track = tracks[idx]
             song_name = track['name']
             artist_name = track['artist']
 
-            await query.edit_message_text(f"📥 دریافت متن برای {song_name} از {artist_name}...")
+            await query.edit_message_text(f"📥 Fetching lyrics for {song_name} by {artist_name}...")
 
+            # Get lyrics (multi-source)
             lyrics = None
             try:
                 lyrics = await asyncio.wait_for(get_lyrics(song_name, artist_name), timeout=25.0)
+            except asyncio.CancelledError:
+                logger.info("Lyrics task was cancelled")
+                await query.edit_message_text("⏹️ Request was cancelled.")
+                return
+            except asyncio.TimeoutError:
+                logger.warning("Lyrics request timed out")
+                await query.edit_message_text("⏰ Timeout: Lyrics request took too long.")
+                return
             except Exception as e:
                 logger.error(f"Lyrics error: {e}")
 
+            # Get genres
             genre_list = None
             if artist_name and LASTFM_API_KEY:
                 try:
                     genre_list = await asyncio.wait_for(get_genres(song_name, artist_name), timeout=15.0)
+                except asyncio.CancelledError:
+                    logger.info("Genres task was cancelled")
+                except asyncio.TimeoutError:
+                    logger.warning("Genres request timed out")
                 except Exception as e:
                     logger.error(f"Genres error: {e}")
 
-            # ساخت پیام نهایی
+            # Build final message
             header = f"<b>🎤 {song_name}</b>\n"
             header += f"<b>👤 {artist_name}</b>\n\n"
 
             if genre_list:
                 genre_lines = "\n".join([f"• {g}" for g in genre_list])
-                genre_section = f"<b>🏷️ ژانرها:</b>\n<code>{genre_lines}</code>\n\n"
+                genre_section = f"<b>🏷️ Genres:</b>\n<code>{genre_lines}</code>\n\n"
             elif LASTFM_API_KEY:
-                genre_section = "<b>🏷️ ژانرها:</b> یافت نشد\n\n"
+                genre_section = "<b>🏷️ Genres:</b> Not found\n\n"
             else:
-                genre_section = "<b>🏷️ ژانرها:</b> غیرفعال\n\n"
+                genre_section = "<b>🏷️ Genres:</b> Disabled\n\n"
 
             if lyrics:
                 lyrics_block = f"<pre>{lyrics}</pre>"
             else:
-                lyrics_block = "<b>📜 متن:</b> یافت نشد"
+                lyrics_block = "<b>📜 Lyrics:</b> Not found"
 
             full_message = header + genre_section + lyrics_block
 
             if len(full_message) > 4096:
                 if lyrics and len(lyrics) > 2000:
-                    truncated_lyrics = lyrics[:2000] + "\n\n... (ادامه)"
+                    truncated_lyrics = lyrics[:2000] + "\n\n... (continued)"
                     lyrics_block = f"<pre>{truncated_lyrics}</pre>"
                     full_message = header + genre_section + lyrics_block
                 else:
-                    full_message = header + genre_section + "<b>📜 متن:</b> خیلی طولانی است."
+                    full_message = header + genre_section + "<b>📜 Lyrics:</b> Too long to display."
 
             await query.message.reply_text(full_message, parse_mode='HTML')
             if lyrics:
-                await query.message.reply_text("✅ می‌توانید متن را با کلیک روی آن کپی کنید.")
+                await query.message.reply_text("✅ You can copy lyrics by tapping on them above.")
 
         except Exception as e:
             logger.error(f"Callback error: {e}", exc_info=True)
-            await query.edit_message_text("❌ خطا رخ داد. لطفاً دوباره تلاش کنید.")
+            await query.edit_message_text("❌ An error occurred. Please try again.")
 
-# ---------- دستور راهنما ----------
+# ---------- Help Command ----------
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🎵 **ربات پیداکننده موسیقی**\n\n"
-        "**نحوه استفاده:**\n"
-        "1. عبارت جستجو (نام آهنگ، خواننده یا قسمتی از متن) را ارسال کنید\n"
-        "2. یا یک فایل صوتی ارسال کنید\n"
-        "3. از بین نتایج، گزینه مورد نظر را انتخاب کنید\n"
-        "4. متن و ژانر آهنگ نمایش داده می‌شود\n\n"
-        "**مثال:**\n"
+        "🎵 **Music Finder Bot**\n\n"
+        "**How to use:**\n"
+        "1. Send any search query (song name, artist, or part of lyrics)\n"
+        "2. Or send an audio file (MP3, etc.)\n"
+        "3. Select from the results using buttons\n"
+        "4. Get lyrics and genres for the chosen song\n\n"
+        "**Examples:**\n"
         "• `Believer`\n"
         "• `Imagine Dragons`\n"
         "• `First things first`\n\n"
-        "**منابع متن (۴ منبع):**\n"
+        "**Lyrics Sources (4):**\n"
         "• Lyrics.ovh\n"
         "• LRCLIB\n"
-        "• Musixmatch (در صورت وجود کلید)\n"
-        "• Genius (در صورت نصب BeautifulSoup و وجود توکن)\n\n"
-        "**منبع ژانر:** Last.fm"
+        "• Musixmatch (if key provided)\n"
+        "• Genius (scraper)\n\n"
+        "**Genres source:** Last.fm"
     )
 
-# ---------- اجرای اصلی ----------
+# ---------- Main Execution ----------
 def main():
     if not BOT_TOKEN:
-        logger.error("❌ BOT_TOKEN تنظیم نشده است!")
+        logger.error("❌ BOT_TOKEN is not set!")
         return
 
     if not LASTFM_API_KEY:
-        logger.warning("⚠️ LASTFM_API_KEY وجود ندارد. جستجو و ژانر غیرفعال خواهد بود!")
+        logger.warning("⚠️ LASTFM_API_KEY missing. Search and genre features will be disabled!")
 
-    logger.info("✅ منابع فعال متن: Lyrics.ovh, LRCLIB")
+    logger.info("✅ Active lyrics sources: Lyrics.ovh, LRCLIB")
     if MUSIXMATCH_API_KEY and MUSIXMATCH_AVAILABLE:
-        logger.info("✅ منبع Musixmatch فعال است.")
+        logger.info("✅ Musixmatch source enabled.")
     else:
-        logger.warning("⚠️ Musixmatch غیرفعال است (کلید یا کتابخانه موجود نیست).")
+        logger.warning("⚠️ Musixmatch not enabled (no key or library missing).")
 
     if BEAUTIFULSOUP_AVAILABLE and GENIUS_TOKEN:
-        logger.info("✅ منبع Genius (اسکرپر) فعال است.")
+        logger.info("✅ Genius scraper enabled.")
     else:
-        logger.warning("⚠️ Genius غیرفعال است (BeautifulSoup یا توکن موجود نیست).")
+        logger.warning("⚠️ Genius scraper disabled (BeautifulSoup or token missing).")
 
     application = Application.builder().token(BOT_TOKEN).build()
 
@@ -540,8 +565,4 @@ def main():
     application.add_handler(MessageHandler(filters.AUDIO | filters.Document.ALL, handle_audio))
     application.add_handler(CallbackQueryHandler(button_callback))
 
-    logger.info("🤖 ربات با موفقیت راه‌اندازی شد...")
-    application.run_polling(allowed_updates=Update.ALL_TYPES)
-
-if __name__ == "__main__":
-    main()
+    logger.info("🤖 Bot started successfully
