@@ -1,403 +1,115 @@
 import os
 import logging
-import sqlite3
-from datetime import datetime
-from flask import Flask, request
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes
+import requests
+import lyricsgenius as genius
+from telegram import Update
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from dotenv import load_dotenv
 
-# ========== تنظیمات اولیه ==========
-TOKEN = os.getenv("BOT_TOKEN")
-if not TOKEN:
-    raise ValueError("BOT_TOKEN environment variable not set!")
+load_dotenv()
 
-REQUIRED_CHANNEL = "@dilemmapl"
-DB_PATH = "bot_data.db"
-PORT = int(os.getenv("PORT", 8080))
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # مثال: https://your-app.onrender.com/webhook
+# ---------- توکن‌ها ----------
+BOT_TOKEN = os.getenv('BOT_TOKEN')
+GENIUS_TOKEN = os.getenv('GENIUS_TOKEN')
+# TheAudioDB نیازی به کلید ندارد (کلید 1 برای تست رایگان است)
+AUDIODB_KEY = '1'
 
-if not WEBHOOK_URL:
-    raise ValueError("WEBHOOK_URL environment variable not set!")
+# ---------- تنظیمات لاگ ----------
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# ========== پایگاه داده ==========
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS users (
-        user_id INTEGER PRIMARY KEY,
-        username TEXT,
-        joined_date TIMESTAMP
-    )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS channels (
-        channel_id INTEGER PRIMARY KEY,
-        username TEXT,
-        title TEXT,
-        user_id INTEGER,
-        added_date TIMESTAMP
-    )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS messages (
-        message_id INTEGER,
-        channel_id INTEGER,
-        date TIMESTAMP,
-        text TEXT,
-        views INTEGER,
-        forwards INTEGER,
-        PRIMARY KEY (message_id, channel_id)
-    )""")
-    conn.commit()
-    conn.close()
-
-init_db()
-
-def get_db():
-    return sqlite3.connect(DB_PATH)
-
-# ========== توابع کمکی ==========
-async def check_membership(context, user_id):
+# ---------- دریافت متن از Genius ----------
+def get_lyrics(song_name, artist_name=None):
     try:
-        chat_member = await context.bot.get_chat_member(chat_id=REQUIRED_CHANNEL, user_id=user_id)
-        return chat_member.status in ["member", "administrator", "creator"]
-    except:
-        return False
-
-# ========== هندلرهای ربات ==========
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if not await check_membership(context, user.id):
-        keyboard = [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{REQUIRED_CHANNEL[1:]}")]]
-        await update.message.reply_text(
-            f"To use the bot, please join {REQUIRED_CHANNEL} first.",
-            reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("INSERT OR IGNORE INTO users (user_id, username, joined_date) VALUES (?, ?, ?)",
-              (user.id, user.username, datetime.now()))
-    conn.commit()
-    conn.close()
-
-    keyboard = ReplyKeyboardMarkup([[KeyboardButton("My Channels")]], resize_keyboard=True)
-    await update.message.reply_text("Welcome! Use the button below to manage your channels.", reply_markup=keyboard)
-
-async def handle_my_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT channel_id, username, title FROM channels WHERE user_id=?", (user_id,))
-    channels = c.fetchall()
-    conn.close()
-
-    if not channels:
-        await update.message.reply_text("No channels added. Use /addchannel to add a channel.")
-        return
-
-    keyboard = []
-    for ch in channels:
-        display = ch[2] if ch[2] else ch[1] if ch[1] else str(ch[0])
-        keyboard.append([InlineKeyboardButton(display, callback_data=f"channel_{ch[0]}")])
-    keyboard.append([InlineKeyboardButton("Back", callback_data="back_to_main")])
-
-    await update.message.reply_text("Select your channels:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    keyboard = ReplyKeyboardMarkup([[KeyboardButton("My Channels")]], resize_keyboard=True)
-    await query.message.reply_text("Welcome! Use the button below to manage your channels.", reply_markup=keyboard)
-    await query.message.delete()
-
-async def channel_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    channel_id = int(query.data.split("_")[1])
-    context.user_data["selected_channel"] = channel_id
-
-    keyboard = [
-        [InlineKeyboardButton("Top Posts", callback_data="analytics_top_posts")],
-        [InlineKeyboardButton("Most Forwarded", callback_data="analytics_most_commented")],
-        [InlineKeyboardButton("Recent Activity", callback_data="analytics_recent")],
-        [InlineKeyboardButton("Back", callback_data="back_channels")]
-    ]
-    await query.edit_message_text("Select analysis type:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-async def analytics_top_posts(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    channel_id = context.user_data.get("selected_channel")
-    if not channel_id:
-        await query.edit_message_text("Please select a channel first.")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT message_id, text, views, forwards FROM messages WHERE channel_id=? ORDER BY views DESC LIMIT 10", (channel_id,))
-    msgs = c.fetchall()
-    conn.close()
-
-    if not msgs:
-        await query.edit_message_text("No messages received for this channel yet.")
-        return
-
-    text = "🔝 Top Posts:\n\n"
-    for idx, (msg_id, msg_text, views, forwards) in enumerate(msgs, 1):
-        preview = msg_text[:50] + "..." if msg_text and len(msg_text) > 50 else msg_text or "No text"
-        text += f"{idx}. {preview}\n👁 {views} Views | 🔄 {forwards} Forwards\n\n"
-
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back_analytics")]]))
-
-async def analytics_most_commented(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    channel_id = context.user_data.get("selected_channel")
-    if not channel_id:
-        await query.edit_message_text("Please select a channel first.")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT message_id, text, views, forwards FROM messages WHERE channel_id=? ORDER BY forwards DESC LIMIT 10", (channel_id,))
-    msgs = c.fetchall()
-    conn.close()
-
-    if not msgs:
-        await query.edit_message_text("No messages received for this channel yet.")
-        return
-
-    text = "💬 Most Forwarded Posts:\n\n"
-    for idx, (msg_id, msg_text, views, forwards) in enumerate(msgs, 1):
-        preview = msg_text[:50] + "..." if msg_text and len(msg_text) > 50 else msg_text or "No text"
-        text += f"{idx}. {preview}\n👁 {views} Views | 🔄 {forwards} Forwards\n\n"
-
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back_analytics")]]))
-
-async def analytics_recent(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    channel_id = context.user_data.get("selected_channel")
-    if not channel_id:
-        await query.edit_message_text("Please select a channel first.")
-        return
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT message_id, text, date, views, forwards FROM messages WHERE channel_id=? ORDER BY date DESC LIMIT 5", (channel_id,))
-    msgs = c.fetchall()
-    conn.close()
-
-    if not msgs:
-        await query.edit_message_text("No messages received for this channel yet.")
-        return
-
-    text = "🕒 Recent Activity:\n\n"
-    for idx, (msg_id, msg_text, date_str, views, forwards) in enumerate(msgs, 1):
-        preview = msg_text[:50] + "..." if msg_text and len(msg_text) > 50 else msg_text or "No text"
-        text += f"{idx}. {preview}\n📅 {date_str[:16]}\n👁 {views} Views | 🔄 {forwards} Forwards\n\n"
-
-    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="back_analytics")]]))
-
-async def back_analytics(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    channel_id = context.user_data.get("selected_channel")
-    if channel_id:
-        keyboard = [
-            [InlineKeyboardButton("Top Posts", callback_data="analytics_top_posts")],
-            [InlineKeyboardButton("Most Forwarded", callback_data="analytics_most_commented")],
-            [InlineKeyboardButton("Recent Activity", callback_data="analytics_recent")],
-            [InlineKeyboardButton("Back", callback_data="back_channels")]
-        ]
-        await query.edit_message_text("Select analysis type:", reply_markup=InlineKeyboardMarkup(keyboard))
-    else:
-        await query.edit_message_text("Please select a channel first.")
-
-async def back_channels(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = update.effective_user.id
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT channel_id, username, title FROM channels WHERE user_id=?", (user_id,))
-    channels = c.fetchall()
-    conn.close()
-
-    if not channels:
-        await query.edit_message_text("No channels found.")
-        return
-
-    keyboard = []
-    for ch in channels:
-        display = ch[2] if ch[2] else ch[1] if ch[1] else str(ch[0])
-        keyboard.append([InlineKeyboardButton(display, callback_data=f"channel_{ch[0]}")])
-    keyboard.append([InlineKeyboardButton("Back", callback_data="back_to_main")])
-
-    await query.edit_message_text("Select your channels:", reply_markup=InlineKeyboardMarkup(keyboard))
-
-# ========== مدیریت افزودن کانال ==========
-ADD_CHANNEL = 1
-
-async def add_channel_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if not await check_membership(context, user_id):
-        await update.message.reply_text("Please join the required channel first.")
-        return
-
-    await update.message.reply_text("Please enter the channel username (e.g. @username) or its numeric ID:")
-    return ADD_CHANNEL
-
-async def add_channel_receive(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    input_text = update.message.text.strip()
-
-    if input_text.startswith("@"):
-        chat_username = input_text[1:]
-        try:
-            chat = await context.bot.get_chat(f"@{chat_username}")
-        except:
-            await update.message.reply_text("Channel not found. Please enter a valid username.")
-            return ADD_CHANNEL
-    else:
-        try:
-            chat_id = int(input_text)
-            chat = await context.bot.get_chat(chat_id)
-        except:
-            await update.message.reply_text("Invalid numeric ID.")
-            return ADD_CHANNEL
-
-    if chat.type not in ["channel", "supergroup"]:
-        await update.message.reply_text("Please enter a valid channel.")
-        return ADD_CHANNEL
-
-    bot_member = await context.bot.get_chat_member(chat.id, context.bot.id)
-    if bot_member.status not in ["administrator", "creator"]:
-        await update.message.reply_text("The bot must be an admin in the channel to receive messages. Please add the bot as admin and try again.")
-        return ADD_CHANNEL
-
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("INSERT OR REPLACE INTO channels (channel_id, username, title, user_id, added_date) VALUES (?, ?, ?, ?, ?)",
-              (chat.id, chat.username, chat.title, user_id, datetime.now()))
-    conn.commit()
-    conn.close()
-
-    await update.message.reply_text(f"Channel {chat.title or chat.username} added successfully.")
-    keyboard = ReplyKeyboardMarkup([[KeyboardButton("My Channels")]], resize_keyboard=True)
-    await update.message.reply_text("Use the button below to view your channels.", reply_markup=keyboard)
-    return ConversationHandler.END
-
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Operation cancelled.")
-    return ConversationHandler.END
-
-# ========== ذخیره‌سازی پیام‌های کانال ==========
-async def store_channel_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.channel_post:
-        msg = update.channel_post
-        channel_id = msg.chat_id
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("SELECT user_id FROM channels WHERE channel_id=?", (channel_id,))
-        row = c.fetchone()
-        if row:
-            try:
-                # دریافت اطلاعات view و forward (ممکن است موجود نباشند)
-                views = msg.views if hasattr(msg, 'views') and msg.views is not None else 0
-                forwards = msg.forward_count if hasattr(msg, 'forward_count') and msg.forward_count is not None else 0
-                text = msg.text or msg.caption or ""
-
-                c.execute("""INSERT OR IGNORE INTO messages 
-                             (message_id, channel_id, date, text, views, forwards) 
-                             VALUES (?, ?, ?, ?, ?, ?)""",
-                          (msg.message_id, channel_id, msg.date, text, views, forwards))
-                conn.commit()
-            except Exception as e:
-                logger.error(f"Error storing message: {e}")
-            finally:
-                conn.close()
-
-# ========== راهنما ==========
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Help:\n"
-        "/start - Start and check membership\n"
-        "/addchannel - Add a new channel\n"
-        "Button 'My Channels' - View channels and analytics\n"
-        "/help - This message"
-    )
-
-# ========== خطاگیر ==========
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-    logger.error(f"Exception while handling an update: {context.error}")
-    if update and isinstance(update, Update) and update.effective_message:
-        await update.effective_message.reply_text("An error occurred. Please try again later.")
-
-# ========== برنامه اصلی با Flask ==========
-app_flask = Flask(__name__)
-
-# اینجا آبجکت Application رو به صورت گلوبال تعریف می‌کنیم تا در webhook قابل دسترسی باشه
-application = None
-
-@app_flask.route("/", methods=["GET"])
-def health():
-    return "OK", 200
-
-@app_flask.route("/webhook", methods=["POST"])
-async def webhook():
-    """دریافت آپدیت از تلگرام از طریق Webhook"""
-    if not application:
-        return "Application not ready", 500
-
-    try:
-        update = Update.de_json(request.get_json(force=True), application.bot)
-        await application.process_update(update)
-        return "OK", 200
+        api = genius.Genius(GENIUS_TOKEN)
+        api.verbose = False
+        api.remove_section_headers = True
+        if artist_name:
+            song = api.search_song(song_name, artist_name)
+        else:
+            song = api.search_song(song_name)
+        return song.lyrics if song else None
     except Exception as e:
-        logger.error(f"Webhook error: {e}")
-        return "Error", 500
+        logging.error(f"Genius Error: {e}")
+        return None
 
-def main():
-    global application
+# ---------- دریافت ژانر از TheAudioDB ----------
+def get_genre(song_name, artist_name):
+    try:
+        url = f"https://www.theaudiodb.com/api/v1/json/{AUDIODB_KEY}/searchtrack.php?s={artist_name}&t={song_name}"
+        response = requests.get(url)
+        data = response.json()
+        if data.get('track'):
+            return data['track'][0].get('strGenre', 'ناشناس')
+        return None
+    except Exception as e:
+        logging.error(f"Genre Error: {e}")
+        return None
 
-    # ساخت اپلیکیشن
-    application = Application.builder().token(TOKEN).build()
-
-    # ثبت هندلرها
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("addchannel", add_channel_start)],
-        states={
-            ADD_CHANNEL: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_channel_receive)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
+# ---------- دستورات بات ----------
+async def start(update: Update, context):
+    await update.message.reply_text(
+        "🎵 سلام! من بات پیداکننده آهنگم.\n"
+        "اسم آهنگ و خواننده رو بفرست تا متن و ژانر رو برات پیدا کنم.\n"
+        "مثال: `Imagine Dragons Believer`"
     )
 
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_command))
-    application.add_handler(conv_handler)
-    application.add_handler(MessageHandler(filters.Regex("^My Channels$"), handle_my_channels))
-    application.add_handler(CallbackQueryHandler(channel_selection, pattern="^channel_"))
-    application.add_handler(CallbackQueryHandler(analytics_top_posts, pattern="^analytics_top_posts$"))
-    application.add_handler(CallbackQueryHandler(analytics_most_commented, pattern="^analytics_most_commented$"))
-    application.add_handler(CallbackQueryHandler(analytics_recent, pattern="^analytics_recent$"))
-    application.add_handler(CallbackQueryHandler(back_analytics, pattern="^back_analytics$"))
-    application.add_handler(CallbackQueryHandler(back_channels, pattern="^back_channels$"))
-    application.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
-    application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, store_channel_message))
-    application.add_error_handler(error_handler)
+async def search_song(update: Update, context):
+    user_input = update.message.text
+    await update.message.reply_text("🔍 در حال جستجو...")
 
-    # مقداردهی اولیه (وب‌هوک)
-    async def set_webhook():
-        await application.bot.set_webhook(url=WEBHOOK_URL)
-        logger.info(f"Webhook set to {WEBHOOK_URL}")
+    # تشخیص خواننده و آهنگ (با خط تیره جدا کن)
+    if ' - ' in user_input:
+        parts = user_input.split(' - ', 1)
+        artist = parts[0].strip()
+        song = parts[1].strip()
+    else:
+        artist = None
+        song = user_input.strip()
 
-    import asyncio
-    asyncio.run(set_webhook())
+    # دریافت متن
+    lyrics = get_lyrics(song, artist)
+    if not lyrics and artist:
+        lyrics = get_lyrics(song)  # تلاش مجدد بدون خواننده
 
-    # شروع سرور Flask
-    app_flask.run(host="0.0.0.0", port=PORT)
+    # دریافت ژانر
+    genre = "نام خواننده مشخص نیست"
+    if artist:
+        g = get_genre(song, artist)
+        if g:
+            genre = g
+        else:
+            genre = "پیدا نشد"
+
+    # ساخت پاسخ نهایی
+    if lyrics:
+        if len(lyrics) > 4000:
+            lyrics = lyrics[:4000] + "\n\n... (ادامه)"
+        response = f"🎤 **{song}**\n"
+        if artist:
+            response += f"👤 {artist}\n"
+        response += f"🏷️ ژانر: {genre}\n\n"
+        response += f"📜 **متن:**\n{lyrics}"
+    else:
+        response = f"😞 آهنگ `{song}` پیدا نشد. اسم رو دقیق‌تر بفرست."
+
+    await update.message.reply_text(response)
+
+async def help_command(update: Update, context):
+    await update.message.reply_text("اسم آهنگ رو با فرمت `خواننده - آهنگ` بفرست.")
+
+# ---------- اجرای اصلی ----------
+def main():
+    if not BOT_TOKEN or not GENIUS_TOKEN:
+        print("❌ خطا: BOT_TOKEN و GENIUS_TOKEN را در فایل .env تنظیم کن!")
+        return
+
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("help", help_command))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_song))
+
+    print("🤖 بات روشن شد...")
+    app.run_polling()
 
 if __name__ == "__main__":
     main()
