@@ -85,9 +85,9 @@ async def handle_my_channels(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def back_to_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("Returned to main menu.")
     keyboard = ReplyKeyboardMarkup([[KeyboardButton("My Channels")]], resize_keyboard=True)
     await query.message.reply_text("Welcome! Use the button below to manage your channels.", reply_markup=keyboard)
+    await query.message.delete()
 async def channel_selection(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -258,6 +258,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Button 'My Channels' - View channels and analytics\n"
         "/help - This message"
     )
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Exception while handling an update: {context.error}")
+    if update and isinstance(update, Update) and update.effective_message:
+        await update.effective_message.reply_text("An error occurred. Please try again later.")
 class HealthHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/":
@@ -292,6 +296,7 @@ def main():
     app.add_handler(CallbackQueryHandler(back_channels, pattern="^back_channels$"))
     app.add_handler(CallbackQueryHandler(back_to_main, pattern="^back_to_main$"))
     app.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, store_channel_message))
+    app.add_error_handler(error_handler)
     threading.Thread(target=run_health_server, daemon=True).start()
     app.run_polling()
 if __name__ == "__main__":
