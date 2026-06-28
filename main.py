@@ -18,10 +18,10 @@ MAIN_KEYBOARD = ReplyKeyboardMarkup([["📊 Top Posts"],["👁 Best Engagement"]
 BACK_KEYBOARD = ReplyKeyboardMarkup([["🔙 Back"]], resize_keyboard=True)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("👋 Welcome!\n\nForward a message from your channel to register.", reply_markup=MAIN_KEYBOARD)
-async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    user_id = update.effective_user.id
-    logger.info(f"TEXT HANDLER TRIGGERED from {user_id}: '{text}'")
+async def handle_all_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip() if update.message and update.message.text else "NO_TEXT"
+    user_id = update.effective_user.id if update.effective_user else "UNKNOWN"
+    logger.info(f"TEXT RECEIVED from {user_id}: '{text}'")
     if text == "🔙 Back":
         await update.message.reply_text("Main Menu", reply_markup=MAIN_KEYBOARD)
         return
@@ -130,8 +130,7 @@ async def main():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.FORWARDED, register_channel))
-    application.add_handler(MessageHandler(filters.TEXT & \
-                                           filters.COMMAND, handle_text))
+    application.add_handler(MessageHandler(filters.TEXT, handle_all_text))
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, channel_post_handler))
     app = web.Application()
     app.router.add_get("/healthz", health_check)
