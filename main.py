@@ -3,7 +3,7 @@ import sqlite3
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, ConversationHandler, filters, ContextTypes
-TOKEN = "YOUR_BOT_TOKEN"
+TOKEN = "your_actual_bot_token_here"
 REQUIRED_CHANNEL = "@dilemmapl"
 DB_PATH = "bot_data.db"
 logging.basicConfig(level=logging.INFO)
