@@ -1,4 +1,5 @@
 import os
+import re
 import asyncio
 import logging
 import requests
@@ -23,23 +24,21 @@ logger = logging.getLogger(__name__)
 _session = requests.Session()
 _session.headers.update({'User-Agent': 'MusicBot/1.0'})
 
+# ---------- Helper: Remove timestamps ----------
+def remove_timestamps(text):
+    """Remove timestamps like [00:12.15] or [00:12] from lyrics."""
+    # Pattern for [mm:ss.xx] or [mm:ss]
+    pattern = r'\[\d{2}:\d{2}(?:\.\d{2})?\]\s*'
+    return re.sub(pattern, '', text)
+
 # ---------- Sync Functions ----------
-def get_lyrics_sync(song_name, artist_name=None):
-    """Get lyrics from lyrics.ovh API."""
+def get_lyrics_sync(song_name, artist_name):
+    """Get lyrics from lyrics.ovh API and remove timestamps."""
     try:
-        if not song_name or not song_name.strip():
+        if not song_name or not song_name.strip() or not artist_name or not artist_name.strip():
             return None
 
-        # If artist is missing, try to search without artist (some APIs support it)
-        if artist_name and artist_name.strip():
-            url = f"https://api.lyrics.ovh/v1/{artist_name.strip()}/{song_name.strip()}"
-        else:
-            # Try with a placeholder artist (lyrics.ovh needs both)
-            # So we'll try with artist = "Unknown" or we can try multiple common artists
-            # Better: we can attempt with a generic search, but lyrics.ovh requires both
-            # So if artist is missing, we return None and tell user to provide artist
-            return None
-
+        url = f"https://api.lyrics.ovh/v1/{artist_name.strip()}/{song_name.strip()}"
         response = _session.get(url, timeout=10)
         
         if response.status_code == 404:
@@ -52,7 +51,9 @@ def get_lyrics_sync(song_name, artist_name=None):
         data = response.json()
         lyrics = data.get('lyrics')
         if lyrics:
-            return lyrics.strip()
+            # Remove timestamps
+            cleaned = remove_timestamps(lyrics)
+            return cleaned.strip()
         return None
 
     except requests.exceptions.Timeout:
@@ -63,7 +64,7 @@ def get_lyrics_sync(song_name, artist_name=None):
         return None
 
 def get_genres_sync(song_name, artist_name):
-    """Get genres from Last.fm using Session."""
+    """Get genres from Last.fm."""
     if not LASTFM_API_KEY:
         return None
 
@@ -101,6 +102,7 @@ def get_genres_sync(song_name, artist_name):
         if isinstance(tags, dict):
             tags = [tags]
 
+        # Return list of genre names (max 5)
         genre_list = [tag.get('name', 'Unknown') for tag in tags[:5] if isinstance(tag, dict)]
         return genre_list if genre_list else None
 
@@ -109,7 +111,7 @@ def get_genres_sync(song_name, artist_name):
         return None
 
 # ---------- Async Wrappers ----------
-async def get_lyrics(song_name, artist_name=None):
+async def get_lyrics(song_name, artist_name):
     return await asyncio.to_thread(get_lyrics_sync, song_name, artist_name)
 
 async def get_genres(song_name, artist_name):
@@ -123,7 +125,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎵 Hello! I'm a music finder bot.\n\n"
         "Send me a song name with artist in this format:\n"
         "`Artist - Song`\n\n"
-        "Example: `Lana Del Rey - Summertime Sadness`"
+        "Example: `Imagine Dragons - Believer`"
     )
 
 async def search_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -139,12 +141,11 @@ async def search_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Please send a valid song name.")
         return
 
-    # Parse Artist - Song
     if ' - ' not in raw:
         await update.message.reply_text(
             "❌ Please include artist name in this format:\n"
             "`Artist - Song`\n"
-            "Example: `Lana Del Rey - Summertime Sadness`"
+            "Example: `Imagine Dragons - Believer`"
         )
         return
 
@@ -155,11 +156,11 @@ async def search_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not song or not artist:
         await update.message.reply_text(
             "❌ Please send a valid artist and song name.\n"
-            "Example: `Lana Del Rey - Summertime Sadness`"
+            "Example: `Imagine Dragons - Believer`"
         )
         return
 
-    # ✅ Get lyrics (separate try block)
+    # Get lyrics
     lyrics = None
     try:
         lyrics = await asyncio.wait_for(get_lyrics(song, artist), timeout=20.0)
@@ -176,43 +177,51 @@ async def search_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Error occurred while fetching lyrics.")
         return
 
-    # ✅ Get genres (separate try block)
-    genre_text = "Fetching..."
+    # Get genres
+    genre_list = None
     if artist and LASTFM_API_KEY:
         try:
-            genres = await asyncio.wait_for(get_genres(song, artist), timeout=15.0)
-            if genres:
-                genre_text = ", ".join(genres)
-            else:
-                genre_text = "Not found"
+            genre_list = await asyncio.wait_for(get_genres(song, artist), timeout=15.0)
         except asyncio.CancelledError:
-            genre_text = "⏹️ Cancelled"
+            logger.info("Genres task cancelled")
         except asyncio.TimeoutError:
-            genre_text = "⏰ Timeout"
+            logger.warning("Genres request timed out")
         except Exception as e:
             logger.error(f"Genres error: {e}", exc_info=True)
-            genre_text = "❌ Error"
-    elif not LASTFM_API_KEY:
-        genre_text = "⚠️ Disabled"
 
-    # ✅ Build response
+    # ---------- Build Response with HTML ----------
     if lyrics:
-        prefix = "📜 Lyrics:\n"
-        continuation = "\n\n... (continued)"
-        header = f"🎤 {song}\n"
-        header += f"👤 {artist}\n"
-        header += f"🏷️ Genres: {genre_text}\n\n"
-        
-        header_len = len(header)
-        max_lyrics_len = 4096 - header_len - len(prefix) - len(continuation)
-        if max_lyrics_len < 100:
-            max_lyrics_len = 100
+        # Build genre section
+        genre_section = ""
+        if genre_list:
+            genre_lines = "\n".join([f"• {g}" for g in genre_list])
+            genre_section = f"<b>🏷️ Genres:</b>\n<code>{genre_lines}</code>\n\n"
+        elif LASTFM_API_KEY:
+            genre_section = "<b>🏷️ Genres:</b> Not found\n\n"
+        else:
+            genre_section = "<b>🏷️ Genres:</b> Disabled (no API key)\n\n"
 
-        if len(lyrics) > max_lyrics_len:
-            lyrics = lyrics[:max_lyrics_len] + continuation
+        # Build header
+        header = f"<b>🎤 {song}</b>\n"
+        header += f"<b>👤 {artist}</b>\n"
 
-        full_message = header + prefix + lyrics
-        await update.message.reply_text(full_message)
+        # Build lyrics with <pre> for copy-paste
+        lyrics_block = f"<pre>{lyrics}</pre>"
+
+        # Combine
+        full_message = header + "\n" + genre_section + lyrics_block
+
+        # Truncate if needed (Telegram limit: 4096 characters)
+        if len(full_message) > 4096:
+            # Truncate lyrics part
+            max_lyrics_len = 4096 - len(header) - len(genre_section) - len("<pre></pre>") - 50
+            if max_lyrics_len < 100:
+                max_lyrics_len = 100
+            truncated_lyrics = lyrics[:max_lyrics_len] + "\n\n... (continued)"
+            lyrics_block = f"<pre>{truncated_lyrics}</pre>"
+            full_message = header + "\n" + genre_section + lyrics_block
+
+        await update.message.reply_text(full_message, parse_mode='HTML')
     else:
         await update.message.reply_text(
             f"😞 Could not find lyrics for '{song}' by '{artist}'.\n"
@@ -223,7 +232,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Send me a song name in this format:\n"
         "`Artist - Song`\n\n"
-        "Example: `Lana Del Rey - Summertime Sadness`"
+        "Example: `Imagine Dragons - Believer`"
     )
 
 # ---------- Main ----------
@@ -240,7 +249,7 @@ def main():
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_song))
 
-    logger.info("🤖 Bot is running with lyrics.ovh API...")
+    logger.info("🤖 Bot is running with HTML formatting and timestamp removal...")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
