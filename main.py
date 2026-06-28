@@ -14,7 +14,11 @@ GENIUS_TOKEN = os.getenv('GENIUS_TOKEN')
 LASTFM_API_KEY = os.getenv('LASTFM_API_KEY')
 
 # ---------- Logging ----------
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 # ---------- Get Lyrics from Genius ----------
 def get_lyrics(song_name, artist_name=None):
@@ -28,7 +32,7 @@ def get_lyrics(song_name, artist_name=None):
             song = api.search_song(song_name)
         return song.lyrics if song else None
     except Exception as e:
-        logging.error(f"Genius Error: {e}")
+        logger.error(f"Genius Error: {e}")
         return None
 
 # ---------- Get Genres from Last.fm ----------
@@ -48,16 +52,16 @@ def get_genres(song_name, artist_name):
         if 'track' in data and 'toptags' in data['track']:
             tags = data['track']['toptags'].get('tag', [])
             if tags:
-                # Get top 5 genres (or fewer if less exist)
+                # Get top 5 genres
                 genre_list = [tag['name'] for tag in tags[:5]]
                 return genre_list
         return None
     except Exception as e:
-        logging.error(f"Last.fm Error: {e}")
+        logger.error(f"Last.fm Error: {e}")
         return None
 
-# ---------- Bot Commands ----------
-async def start(update: Update, context):
+# ---------- Bot Commands (Async) ----------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "🎵 Hello! I'm a music finder bot.\n"
         "Send me a song name (with artist if possible) and I'll find the lyrics and genres.\n\n"
@@ -66,7 +70,7 @@ async def start(update: Update, context):
         "`Bohemian Rhapsody` (will search without artist)"
     )
 
-async def search_song(update: Update, context):
+async def search_song(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_input = update.message.text
     await update.message.reply_text("🔍 Searching...")
 
@@ -89,7 +93,7 @@ async def search_song(update: Update, context):
     if artist:
         genres = get_genres(song, artist)
         if genres:
-            genre_text = ", ".join(genres)  # e.g. "Rock, Pop, Electronic"
+            genre_text = ", ".join(genres)
         else:
             genre_text = "Not found"
 
@@ -108,7 +112,7 @@ async def search_song(update: Update, context):
 
     await update.message.reply_text(response)
 
-async def help_command(update: Update, context):
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Send me a song name in this format:\n"
         "`Artist - Song Name`\n\n"
@@ -117,17 +121,28 @@ async def help_command(update: Update, context):
 
 # ---------- Main Execution ----------
 def main():
-    if not BOT_TOKEN or not GENIUS_TOKEN or not LASTFM_API_KEY:
-        print("❌ ERROR: Set BOT_TOKEN, GENIUS_TOKEN, and LASTFM_API_KEY in .env file!")
+    # Check if all tokens are set
+    if not BOT_TOKEN:
+        logger.error("❌ BOT_TOKEN is not set!")
+        return
+    if not GENIUS_TOKEN:
+        logger.error("❌ GENIUS_TOKEN is not set!")
+        return
+    if not LASTFM_API_KEY:
+        logger.error("❌ LASTFM_API_KEY is not set!")
         return
 
-    app = Application.builder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_song))
+    # Create Application
+    application = Application.builder().token(BOT_TOKEN).build()
 
-    print("🤖 Bot is running...")
-    app.run_polling()
+    # Add handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, search_song))
+
+    # Start polling
+    logger.info("🤖 Bot is running...")
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == "__main__":
     main()
