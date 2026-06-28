@@ -58,7 +58,7 @@ async def register_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     user_id = update.effective_user.id
     try:
-        data = {"chat_id": str(chat.id),"title": chat.title or "Unknown Channel","owner_id": user_id,"member_count": getattr(chat, 'member_count', 0),"updated_at": datetime.now(timezone.utc).isoformat()}
+        data = {"chat_id": str(chat.id),"title": chat.title or "Unknown Channel","owner_id": user_id,"member_count": getattr(chat, 'member_count', 0)}
         supabase.table("channels").upsert(data).execute()
         await message.reply_text(f"✅ Channel «{chat.title}» registered successfully!", reply_markup=MAIN_KEYBOARD)
         logger.info(f"Channel registered: {chat.title} ({chat.id}) by user {user_id}")
@@ -134,7 +134,7 @@ async def main():
     application = Application.builder().token(BOT_TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & \
-                                           filters.COMMAND, handle_text))
+filters.COMMAND, handle_text))
     application.add_handler(MessageHandler(filters.FORWARDED, register_channel))
     application.add_handler(MessageHandler(filters.ALL & filters.ChatType.CHANNEL, channel_post_handler))
     app = web.Application()
