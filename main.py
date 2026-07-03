@@ -1,8 +1,11 @@
 import os
 import re
+import json
 import asyncio
 import logging
-import httpx
+import urllib.request
+import urllib.error
+from urllib.parse import urlencode
 from mutagen import File as MutagenFile
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -42,9 +45,49 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ---------- HTTP Session (httpx.Client) ----------
-_session = httpx.Client()
-_session.headers.update({'User-Agent': 'MusicBot/1.0 (Telegram Bot)'})
+# ---------- HTTP Helper (using urllib) ----------
+def http_get(url, params=None, headers=None, timeout=10):
+    """Send GET request using urllib and return parsed JSON or None."""
+    if params:
+        url = f"{url}?{urlencode(params)}"
+    
+    req = urllib.request.Request(url, headers=headers or {})
+    req.add_header('User-Agent', 'MusicBot/1.0 (Telegram Bot)')
+    
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            status = response.getcode()
+            if status != 200:
+                logger.warning(f"HTTP {status} for {url}")
+                return None
+            data = response.read().decode('utf-8')
+            return json.loads(data)
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            logger.info(f"HTTP 404 for {url}")
+        else:
+            logger.warning(f"HTTP error {e.code} for {url}")
+        return None
+    except Exception as e:
+        logger.error(f"HTTP request failed: {e}")
+        return None
+
+def http_get_text(url, params=None, headers=None, timeout=10):
+    """Send GET request and return raw text content."""
+    if params:
+        url = f"{url}?{urlencode(params)}"
+    
+    req = urllib.request.Request(url, headers=headers or {})
+    req.add_header('User-Agent', 'MusicBot/1.0 (Telegram Bot)')
+    
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as response:
+            status = response.getcode()
+            if status != 200:
+                return None
+            return response.read().decode('utf-8')
+    except Exception:
+        return None
 
 # ---------- Helper Functions ----------
 def remove_timestamps(text):
@@ -103,15 +146,11 @@ def search_tracks_sync(query, limit=10):
             'format': 'json',
             'limit': limit
         }
-        response = _session.get(url, params=params, timeout=10)
-
-        if not response.is_success:   # httpx uses is_success instead of ok
-            logger.warning(f"Last.fm search HTTP error: {response.status_code}")
+        data = http_get(url, params=params)
+        if not data:
             return None
 
-        data = response.json()
         results = data.get('results', {}).get('trackmatches', {}).get('track', [])
-        
         if not results:
             return None
 
@@ -132,21 +171,11 @@ def search_tracks_sync(query, limit=10):
 def get_lyrics_from_lyricsovh(song_name, artist_name):
     try:
         url = f"https://api.lyrics.ovh/v1/{artist_name.strip()}/{song_name.strip()}"
-        response = _session.get(url, timeout=10)
-        
-        if response.status_code == 404:
-            logger.info(f"Lyrics.ovh: Not found for {song_name} by {artist_name}")
-            return None
-        elif not response.is_success:
-            logger.warning(f"Lyrics.ovh HTTP error: {response.status_code}")
-            return None
-
-        data = response.json()
-        lyrics = data.get('lyrics')
-        if lyrics:
+        data = http_get(url)
+        if data and 'lyrics' in data:
+            lyrics = data['lyrics']
             return remove_timestamps(lyrics).strip()
         return None
-
     except Exception as e:
         logger.error(f"Lyrics.ovh error: {e}")
         return None
@@ -158,21 +187,11 @@ def get_lyrics_from_lrclib(song_name, artist_name):
             'artist_name': artist_name.strip(),
             'track_name': song_name.strip()
         }
-        response = _session.get(url, params=params, timeout=10)
-        
-        if response.status_code == 404:
-            logger.info(f"LRCLIB: Not found for {song_name} by {artist_name}")
-            return None
-        elif not response.is_success:
-            logger.warning(f"LRCLIB HTTP error: {response.status_code}")
-            return None
-
-        data = response.json()
-        lyrics = data.get('plainLyrics')
-        if lyrics:
+        data = http_get(url, params=params)
+        if data and 'plainLyrics' in data:
+            lyrics = data['plainLyrics']
             return remove_timestamps(lyrics).strip()
         return None
-
     except Exception as e:
         logger.error(f"LRCLIB error: {e}")
         return None
@@ -217,25 +236,18 @@ def get_lyrics_from_musixmatch(song_name, artist_name):
 def get_lyrics_from_genius(song_name, artist_name):
     """Get lyrics from Genius (if BeautifulSoup and token are available)."""
     if not BEAUTIFULSOUP_AVAILABLE:
-        logger.info("BeautifulSoup not available, skipping Genius.")
         return None
-
     if not GENIUS_TOKEN:
-        logger.info("GENIUS_TOKEN not set, skipping Genius.")
         return None
 
     try:
         search_url = "https://api.genius.com/search"
-        headers = {
-            "Authorization": f"Bearer {GENIUS_TOKEN}",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
+        headers = {"Authorization": f"Bearer {GENIUS_TOKEN}"}
         params = {"q": f"{artist_name} {song_name}"}
-        response = _session.get(search_url, headers=headers, params=params, timeout=10)
-        if not response.is_success:
+        data = http_get(search_url, params=params, headers=headers)
+        if not data:
             return None
 
-        data = response.json()
         hits = data.get('response', {}).get('hits', [])
         if not hits:
             return None
@@ -243,11 +255,11 @@ def get_lyrics_from_genius(song_name, artist_name):
         song_path = hits[0]['result']['path']
         song_url = f"https://genius.com{song_path}"
 
-        page_response = _session.get(song_url, timeout=10)
-        if not page_response.is_success:
+        page_html = http_get_text(song_url)
+        if not page_html:
             return None
 
-        soup = BeautifulSoup(page_response.text, 'html.parser')
+        soup = BeautifulSoup(page_html, 'html.parser')
         lyrics_div = soup.find('div', {'data-lyrics-container': 'true'})
         if not lyrics_div:
             lyrics_div = soup.find('div', class_='lyrics')
@@ -302,13 +314,10 @@ def get_genres_sync(song_name, artist_name):
             'track': song_name.strip(),
             'format': 'json'
         }
-        response = _session.get(url, params=params, timeout=10)
-
-        if not response.is_success:
-            logger.warning(f"Last.fm HTTP error: {response.status_code}")
+        data = http_get(url, params=params)
+        if not data:
             return None
 
-        data = response.json()
         track = data.get('track')
         if not track:
             return None
@@ -514,7 +523,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         except Exception as e:
             logger.error(f"Callback error: {e}", exc_info=True)
-            await query.edit_message_text("❌ An error occurred. please try again.")
+            await query.edit_message_text("❌ An error occurred. Please try again.")
 
 # ---------- Help Command ----------
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
