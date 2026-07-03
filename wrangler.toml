@@ -1,3 +1,4 @@
 name = "telegram-bot"
 main = "main.py"
 compatibility_date = "2024-11-12"
+compatibility_flags = ["python_workers"]
