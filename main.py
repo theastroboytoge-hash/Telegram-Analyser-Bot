@@ -2,7 +2,7 @@ import os
 import re
 import asyncio
 import logging
-import requests
+import httpx
 from mutagen import File as MutagenFile
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
@@ -42,8 +42,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# ---------- HTTP Session ----------
-_session = requests.Session()
+# ---------- HTTP Session (httpx.Client) ----------
+_session = httpx.Client()
 _session.headers.update({'User-Agent': 'MusicBot/1.0 (Telegram Bot)'})
 
 # ---------- Helper Functions ----------
@@ -105,7 +105,7 @@ def search_tracks_sync(query, limit=10):
         }
         response = _session.get(url, params=params, timeout=10)
 
-        if not response.ok:
+        if not response.is_success:   # httpx uses is_success instead of ok
             logger.warning(f"Last.fm search HTTP error: {response.status_code}")
             return None
 
@@ -137,7 +137,7 @@ def get_lyrics_from_lyricsovh(song_name, artist_name):
         if response.status_code == 404:
             logger.info(f"Lyrics.ovh: Not found for {song_name} by {artist_name}")
             return None
-        elif not response.ok:
+        elif not response.is_success:
             logger.warning(f"Lyrics.ovh HTTP error: {response.status_code}")
             return None
 
@@ -163,7 +163,7 @@ def get_lyrics_from_lrclib(song_name, artist_name):
         if response.status_code == 404:
             logger.info(f"LRCLIB: Not found for {song_name} by {artist_name}")
             return None
-        elif not response.ok:
+        elif not response.is_success:
             logger.warning(f"LRCLIB HTTP error: {response.status_code}")
             return None
 
@@ -232,7 +232,7 @@ def get_lyrics_from_genius(song_name, artist_name):
         }
         params = {"q": f"{artist_name} {song_name}"}
         response = _session.get(search_url, headers=headers, params=params, timeout=10)
-        if not response.ok:
+        if not response.is_success:
             return None
 
         data = response.json()
@@ -244,7 +244,7 @@ def get_lyrics_from_genius(song_name, artist_name):
         song_url = f"https://genius.com{song_path}"
 
         page_response = _session.get(song_url, timeout=10)
-        if not page_response.ok:
+        if not page_response.is_success:
             return None
 
         soup = BeautifulSoup(page_response.text, 'html.parser')
@@ -304,7 +304,7 @@ def get_genres_sync(song_name, artist_name):
         }
         response = _session.get(url, params=params, timeout=10)
 
-        if not response.ok:
+        if not response.is_success:
             logger.warning(f"Last.fm HTTP error: {response.status_code}")
             return None
 
@@ -514,7 +514,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         except Exception as e:
             logger.error(f"Callback error: {e}", exc_info=True)
-            await query.edit_message_text("❌ An error occurred. Please try again.")
+            await query.edit_message_text("❌ An error occurred. please try again.")
 
 # ---------- Help Command ----------
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
