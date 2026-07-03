@@ -6,7 +6,6 @@ import logging
 import urllib.request
 import urllib.error
 from urllib.parse import urlencode
-from mutagen import File as MutagenFile
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 from dotenv import load_dotenv
@@ -95,39 +94,27 @@ def remove_timestamps(text):
     return re.sub(pattern, '', text)
 
 def extract_metadata(file_path):
-    """Extract artist and title from audio file."""
-    try:
-        audio = MutagenFile(file_path)
-        if audio is None:
-            return None, None
-
-        artist = None
-        title = None
-
-        # MP3 (ID3)
-        if 'TPE1' in audio:
-            artist = str(audio['TPE1'])
-        elif 'artist' in audio:
-            artist = str(audio['artist'][0]) if isinstance(audio['artist'], list) else str(audio['artist'])
-
-        if 'TIT2' in audio:
-            title = str(audio['TIT2'])
-        elif 'title' in audio:
-            title = str(audio['title'][0]) if isinstance(audio['title'], list) else str(audio['title'])
-
-        if not artist or not title:
-            filename = os.path.basename(file_path)
-            if ' - ' in filename:
-                parts = filename.rsplit(' - ', 1)
-                artist = parts[0].strip()
-                title = parts[1].split('.')[0].strip()
-            else:
-                title = os.path.splitext(filename)[0]
-
-        return artist, title
-    except Exception as e:
-        logger.error(f"Metadata extraction error: {e}")
-        return None, None
+    """
+    Extract artist and title from filename only.
+    Since mutagen is not available in Pyodide, we rely on filename parsing.
+    """
+    filename = os.path.basename(file_path)
+    # Remove extension
+    name_part = os.path.splitext(filename)[0]
+    
+    artist = None
+    title = None
+    
+    # Try to split by ' - ' (most common pattern: Artist - Title)
+    if ' - ' in name_part:
+        parts = name_part.rsplit(' - ', 1)
+        artist = parts[0].strip()
+        title = parts[1].strip()
+    else:
+        # If no separator, treat whole name as title
+        title = name_part.strip()
+    
+    return artist, title
 
 # ---------- Search on Last.fm ----------
 def search_tracks_sync(query, limit=10):
@@ -358,7 +345,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎵 Hello! I'm a music finder bot.\n\n"
         "Send me any search query (song name, artist, or even part of lyrics):\n"
         "Example: `Believer` or `Imagine Dragons` or `First things first`\n\n"
-        "You can also send an audio file (MP3, etc.) and I'll search using its metadata."
+        "You can also send an audio file (MP3, etc.) and I'll search using its filename metadata."
     )
 
 async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -376,7 +363,7 @@ async def handle_audio(update: Update, context: ContextTypes.DEFAULT_TYPE):
         artist, title = extract_metadata(file_path)
         if artist and title:
             query = f"{artist} - {title}"
-            await update.message.reply_text(f"🎵 Metadata: {artist} - {title}\nSearching...")
+            await update.message.reply_text(f"🎵 Extracted: {artist} - {title}\nSearching...")
             await search_and_show_results(update, context, query)
         else:
             await update.message.reply_text("❌ Could not extract artist and title. Please try searching manually.")
@@ -531,7 +518,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🎵 **Music Finder Bot**\n\n"
         "**How to use:**\n"
         "1. Send any search query (song name, artist, or part of lyrics)\n"
-        "2. Or send an audio file (MP3, etc.)\n"
+        "2. Or send an audio file (MP3, etc.) – metadata is extracted from filename\n"
         "3. Select from the results using buttons\n"
         "4. Get lyrics and genres for the chosen song\n\n"
         "**Examples:**\n"
